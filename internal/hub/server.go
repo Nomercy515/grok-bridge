@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"grok-bridge/internal/agent"
 	"grok-bridge/internal/auth"
 	"grok-bridge/internal/bridge"
+	"grok-bridge/internal/buildsessions"
 	"grok-bridge/internal/endpoint"
 	"grok-bridge/internal/restart"
 	"grok-bridge/internal/sessions"
@@ -368,7 +370,7 @@ func (s *Server) handleRotatePairing(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, 200, map[string]any{"sessions": s.Hub.Store.ListSessions()})
+		writeJSON(w, 200, map[string]any{"sessions": s.listMergedSessions()})
 	case http.MethodPost:
 		body := readJSON(r)
 		title, _ := body["title"].(string)
@@ -377,15 +379,31 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 500, map[string]any{"error": err.Error()})
 			return
 		}
+		sess.Source = "bridge"
 		summary := map[string]any{
 			"id": sess.ID, "title": sess.Title,
 			"created_at": sess.CreatedAt, "updated_at": sess.UpdatedAt, "message_count": 0,
+			"source": "bridge",
 		}
 		s.Hub.Broadcast(map[string]any{"type": "session_created", "session": summary}, "", nil)
 		writeJSON(w, 201, sess)
 	default:
 		http.Error(w, "method not allowed", 405)
 	}
+}
+
+func (s *Server) listMergedSessions() []sessions.SessionSummary {
+	bridge := s.Hub.Store.ListSessions()
+	out := make([]sessions.SessionSummary, 0, len(bridge)+8)
+	for _, sum := range bridge {
+		sum.Source = "bridge"
+		out = append(out, sum)
+	}
+	out = append(out, buildsessions.List()...)
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].UpdatedAt > out[j].UpdatedAt
+	})
+	return out
 }
 
 func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
@@ -395,10 +413,20 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// URL path may leave "build%3A..." decoded as "build:..."
 	sid := parts[0]
 	if len(parts) == 1 {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", 405)
+			return
+		}
+		if _, isBuild := buildsessions.StripPrefix(sid); isBuild {
+			sess, err := buildsessions.Get(sid)
+			if err != nil || sess == nil {
+				writeJSON(w, 404, map[string]any{"error": "not found"})
+				return
+			}
+			writeJSON(w, 200, sess)
 			return
 		}
 		sess, err := s.Hub.Store.Get(sid)
@@ -406,7 +434,17 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 404, map[string]any{"error": "not found"})
 			return
 		}
+		if sess.Source == "" {
+			sess.Source = "bridge"
+		}
 		writeJSON(w, 200, sess)
+		return
+	}
+	if _, isBuild := buildsessions.StripPrefix(sid); isBuild {
+		writeJSON(w, 403, map[string]any{
+			"error": "build session is read-only",
+			"hint":  "sending/resuming Build sessions is not supported in v1",
+		})
 		return
 	}
 	if parts[1] == "messages" && r.Method == http.MethodPost {
@@ -662,7 +700,15 @@ func (s *Server) handleWSMessage(conn *websocket.Conn, data map[string]any) {
 			_ = conn.WriteJSON(map[string]any{"type": "error", "error": "session_id required"})
 			return
 		}
-		sess, _ := s.Hub.Store.Get(sid)
+		var sess *sessions.Session
+		if _, isBuild := buildsessions.StripPrefix(sid); isBuild {
+			sess, _ = buildsessions.Get(sid)
+		} else {
+			sess, _ = s.Hub.Store.Get(sid)
+			if sess != nil && sess.Source == "" {
+				sess.Source = "bridge"
+			}
+		}
 		if sess == nil {
 			_ = conn.WriteJSON(map[string]any{"type": "error", "error": "session not found"})
 			return
@@ -680,6 +726,10 @@ func (s *Server) handleWSMessage(conn *websocket.Conn, data map[string]any) {
 		content = strings.TrimSpace(content)
 		if sid == "" || content == "" {
 			_ = conn.WriteJSON(map[string]any{"type": "error", "error": "session_id and content required"})
+			return
+		}
+		if _, isBuild := buildsessions.StripPrefix(sid); isBuild {
+			_ = conn.WriteJSON(map[string]any{"type": "error", "error": "build session is read-only"})
 			return
 		}
 		sess, _ := s.Hub.Store.Get(sid)

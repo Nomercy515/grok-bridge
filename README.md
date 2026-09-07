@@ -32,6 +32,7 @@ Default listen port: **4020**. Canonical phone URL:
 ## What you get
 
 - **Desktop ↔ phone session bridge** — one server-authoritative transcript under `data/sessions/`; pick up the same conversation on another Tailscale device
+- **Grok Build session browser (v1 read-only)** — list/open on-disk Build sessions from `$GROK_HOME/sessions` (set `GROK_BRIDGE_GROK_HOME` / `GROK_HOME`); IDs prefixed `build:`; send/resume not wired yet
 - **Live WebSocket chat** — streaming assistant replies with fan-out to every connected client; `session.snapshot` resume after reconnect
 - **Pairing lock** — 6-digit code → hub bearer token; code rotates after each successful pair; token rotate without re-pairing
 - **Mobile-friendly UI** — dark greyscale cockpit, session rail, floating composer, live/sync/offline status (see `docs/UI_NOTES.md`)
@@ -138,6 +139,7 @@ This project does not invent other mesh, tunnel, or LAN auto-discovery paths.
 | Callback base | MagicDNS from `endpoint.json` | `GROK_BRIDGE_CALLBACK_BASE` (reachable from the bot; include port) |
 | Agent timeout | `120s` | `GROK_BRIDGE_AGENT_TIMEOUT` |
 | Allow `?token=` | off | `GROK_BRIDGE_ALLOW_QUERY_TOKEN=1` (discouraged) |
+| Grok home (Build sessions) | `$HOME/.grok` | `GROK_BRIDGE_GROK_HOME` then `GROK_HOME` then `~/.grok` (env-agnostic; missing → Build list empty) |
 
 Never commit real secrets, webhook URLs, or sender keys. See `docs/AGENT_BRIDGE.md` and `docs/grok-bridge.env.example`.
 
@@ -171,8 +173,8 @@ Never commit real secrets, webhook URLs, or sender keys. See `docs/AGENT_BRIDGE.
 | POST | `/api/auth/pair` | no | `{"code"}` → token |
 | POST | `/api/auth/rotate` | bearer | new token |
 | POST | `/api/auth/rotate-pairing` | bearer | new pairing code |
-| GET/POST | `/api/sessions` | bearer | list / create |
-| GET | `/api/sessions/{id}` | bearer | full transcript |
+| GET/POST | `/api/sessions` | bearer | list (bridge + Build with `source`) / create (bridge only) |
+| GET | `/api/sessions/{id}` | bearer | full transcript (`build:…` ids are read-only from disk) |
 | POST | `/api/sessions/{id}/messages` | bearer | HTTP chat fallback |
 | POST | `/api/sessions/{id}/cancel` | bearer | Stop mid-turn |
 | POST | `/api/control/restart` | bearer | supervised restart |

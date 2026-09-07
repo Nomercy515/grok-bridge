@@ -743,3 +743,119 @@ func TestDemoAgentCancelViaAPI(t *testing.T) {
 		t.Fatal("expected cancelled assistant_done")
 	}
 }
+
+func TestBuildSessionsMerged(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GROK_BRIDGE_GROK_HOME", home)
+	t.Setenv("GROK_HOME", "")
+
+	sid := "build-sess-1"
+	dir := filepath.Join(home, "sessions", "proj", sid)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	summary := map[string]any{
+		"info":              map[string]any{"id": sid, "cwd": "/proj"},
+		"generated_title":   "From disk",
+		"updated_at":        9999999999.0, // force to top of list
+		"num_chat_messages": 2,
+	}
+	b, _ := json.Marshal(summary)
+	_ = os.WriteFile(filepath.Join(dir, "summary.json"), b, 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "chat_history.jsonl"), []byte(
+		`{"role":"user","content":"hello build"}`+"\n"+
+			`{"role":"assistant","content":"hi from disk"}`+"\n",
+	), 0o644)
+
+	ts, _, _ := testServer(t, func(o *hub.Options) { o.SeedDemo = false })
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/sessions", nil)
+	req.Header = authHeader()
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var body struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&body)
+	if res.StatusCode != 200 {
+		t.Fatal(res.Status)
+	}
+	var found map[string]any
+	for _, s := range body.Sessions {
+		if s["id"] == "build:"+sid {
+			found = s
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("build session missing: %+v", body.Sessions)
+	}
+	if found["source"] != "build" || found["title"] != "From disk" {
+		t.Fatalf("%+v", found)
+	}
+
+	req2, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/sessions/build%3A"+sid, nil)
+	req2.Header = authHeader()
+	res2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res2.Body.Close()
+	var sess map[string]any
+	_ = json.NewDecoder(res2.Body).Decode(&sess)
+	if res2.StatusCode != 200 {
+		t.Fatalf("%d %v", res2.StatusCode, sess)
+	}
+	if sess["readonly"] != true || sess["source"] != "build" {
+		t.Fatalf("%v", sess)
+	}
+	msgs, _ := sess["messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("msgs=%v", sess["messages"])
+	}
+
+	// Read-only: POST messages rejected
+	req3, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions/build%3A"+sid+"/messages",
+		strings.NewReader(`{"content":"nope"}`))
+	req3.Header = authHeader()
+	res3, _ := http.DefaultClient.Do(req3)
+	defer res3.Body.Close()
+	if res3.StatusCode != 403 {
+		t.Fatalf("want 403 got %d", res3.StatusCode)
+	}
+}
+
+func TestNoGrokHomeBridgeOnly(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent")
+	t.Setenv("GROK_BRIDGE_GROK_HOME", missing)
+	t.Setenv("GROK_HOME", missing)
+	ts, _, _ := testServer(t, func(o *hub.Options) { o.SeedDemo = false })
+	// Create one bridge session
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"only"}`))
+	req.Header = authHeader()
+	res, _ := http.DefaultClient.Do(req)
+	res.Body.Close()
+
+	req2, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/sessions", nil)
+	req2.Header = authHeader()
+	res2, _ := http.DefaultClient.Do(req2)
+	defer res2.Body.Close()
+	var body struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	_ = json.NewDecoder(res2.Body).Decode(&body)
+	for _, s := range body.Sessions {
+		if s["source"] == "build" {
+			t.Fatalf("unexpected build session: %+v", s)
+		}
+		if s["source"] != "bridge" && s["source"] != nil && s["source"] != "" {
+			t.Fatalf("unexpected source %+v", s)
+		}
+	}
+	if len(body.Sessions) < 1 {
+		t.Fatal("expected bridge session")
+	}
+}

@@ -43,3 +43,12 @@ Dark greyscale contrast kept high on primary text; focus rings on interactive co
 - **Stop** button next to Send; enabled only while a turn is active (after send / `assistant_start`, until `assistant_done`).
 - Calls `POST /api/sessions/{id}/cancel` with the pairing bearer.
 - Cancelled turns show a small **Cancelled** note on the assistant bubble (`assistant_done.cancelled` or persisted `message.cancelled`).
+
+## Grok Build sessions (v1)
+
+The session rail merges hub-native chats (`source: "bridge"`) with on-disk Grok Build sessions (`source: "build"`, ids `build:<session-id>`).
+
+- Point the hub at a Grok home via `GROK_BRIDGE_GROK_HOME` (preferred) or `GROK_HOME`, else `~/.grok`.
+- Expected layout: `$GROK_HOME/sessions/<url.PathEscape(cwd)>/<session-id>/summary.json` + `chat_history.jsonl` (flat `sessions/<id>/` also tolerated).
+- Opening a Build session loads the transcript read-only; the composer is disabled (no send/resume/ACP in v1).
+- Missing Grok home → empty Build list; hub-native sessions unchanged.
