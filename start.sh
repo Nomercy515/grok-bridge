@@ -1,11 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")"
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+
+# Local quick-start prereqs (curl, Go ≥ 1.22, git). Full Tailscale install: scripts/install.sh
+# shellcheck disable=SC1091
+source "$ROOT/scripts/ensure-prereqs.sh"
+ensure_prereqs
+
+chmod +x \
+  "$ROOT/start.sh" \
+  "$ROOT/scripts/ensure-prereqs.sh" \
+  "$ROOT/scripts/supervise.sh" \
+  "$ROOT/scripts/gen-dev-certs.sh" \
+  "$ROOT/scripts/refresh-endpoint.sh" \
+  "$ROOT/scripts/install.sh" \
+  2>/dev/null || true
+
 mkdir -p bin data
+
+need_build=0
 if [[ ! -x bin/grok-bridge ]]; then
+  need_build=1
+else
+  # Rebuild when any tracked Go source (or go.mod/go.sum) is newer than the binary.
+  while IFS= read -r -d '' f; do
+    if [[ "$f" -nt bin/grok-bridge ]]; then
+      need_build=1
+      break
+    fi
+  done < <(find . \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' \) -print0 2>/dev/null)
+fi
+
+if [[ "$need_build" -eq 1 ]]; then
   echo "==> Building grok-bridge"
   go build -o bin/grok-bridge ./cmd/grok-bridge
 fi
+
 export GROK_BRIDGE_DATA="${GROK_BRIDGE_DATA:-$(pwd)/data}"
 mkdir -p "$GROK_BRIDGE_DATA"
 
