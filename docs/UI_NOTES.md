@@ -25,6 +25,15 @@ Product chrome for the hub web client.
 - **Composer** — floating card; Enter send / Shift+Enter newline; single primary button morphs Send ↔ Stop
 - **Brand mark** — geometric orbit glyph (original)
 
+
+## Message formatting
+
+Chat bodies use `formatMessageHTML` / `setMsgBody` (not raw `textContent`):
+
+- **Bold** — complete `**pairs**` only become `<strong>`; unmatched `**` stay literal. Escape HTML before bold so user markup cannot inject tags.
+- **System reminders** — complete `<system-reminder>…</system-reminder>` blocks (case-insensitive) render as a muted `.sys-reminder` aside with a “System reminder” label (not as Grok answer text). Inner text still gets escape + bold.
+- Streaming keeps `data-raw` on `.body` and re-formats on each delta / `assistant_done` / merge.
+
 ## Accessibility
 
 Dark greyscale contrast kept high on primary text; focus rings on interactive controls; pairing dialog uses `role="dialog"` + labelled title; status region `aria-live`.
