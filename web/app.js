@@ -691,24 +691,47 @@
 
   /**
    * XSS-safe message HTML: escape first, then bold; wrap complete
-   * <system-reminder>…</system-reminder> blocks (case-insensitive) as asides.
+   * <system-reminder> and <user_query> blocks (case-insensitive) as asides.
+   * Lone/unclosed tags stay escaped literal text.
    */
+  function formatTaggedAside(kind, inner) {
+    const k = String(kind || "").toLowerCase();
+    if (k === "system-reminder") {
+      return (
+        '<aside class="sys-reminder" role="note">' +
+        '<div class="sys-reminder-label">System reminder</div>' +
+        '<div class="sys-reminder-body">' +
+        formatBold(escapeHtml(inner)) +
+        "</div></aside>"
+      );
+    }
+    if (k === "user-query" || k === "user_query") {
+      return (
+        '<aside class="user-query" role="note">' +
+        '<div class="user-query-label">User query</div>' +
+        '<div class="user-query-body">' +
+        formatBold(escapeHtml(inner)) +
+        "</div></aside>"
+      );
+    }
+    return formatBold(escapeHtml(inner));
+  }
+
   function formatMessageHTML(raw) {
     const s = String(raw == null ? "" : raw);
-    const parts = s.split(/<system-reminder>([\s\S]*?)<\/system-reminder>/gi);
+    const re = /<(system-reminder|user_query)>([\s\S]*?)<\/\1>/gi;
     let html = "";
-    for (let i = 0; i < parts.length; i++) {
-      const chunk = parts[i] == null ? "" : parts[i];
-      if (i % 2 === 1) {
-        html +=
-          '<aside class="sys-reminder" role="note">' +
-          '<div class="sys-reminder-label">System reminder</div>' +
-          '<div class="sys-reminder-body">' +
-          formatBold(escapeHtml(chunk)) +
-          "</div></aside>";
-      } else if (chunk) {
-        html += formatBold(escapeHtml(chunk));
+    let last = 0;
+    let m;
+    while ((m = re.exec(s)) !== null) {
+      if (m.index > last) {
+        html += formatBold(escapeHtml(s.slice(last, m.index)));
       }
+      html += formatTaggedAside(m[1], m[2]);
+      last = m.index + m[0].length;
+    }
+    if (last < s.length) {
+      html += formatBold(escapeHtml(s.slice(last)));
     }
     return html;
   }
