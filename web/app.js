@@ -30,6 +30,7 @@
     modeBadge: $("modeBadge"),
     demoLink: $("demoLink"),
     btnRestart: $("btnRestart"),
+    btnJumpBottom: $("btnJumpBottom"),
   };
 
   let token = localStorage.getItem(TOKEN_KEY) || "";
@@ -442,9 +443,11 @@
       return;
     }
     if (t === "assistant_delta") {
+      const follow = nearBottom();
       if (!streamingEl) streamingEl = appendMsg("assistant", "", true);
       streamingEl.querySelector(".body").textContent += data.delta || "";
-      scrollFeed();
+      if (follow) scrollFeed();
+      else updateJumpBottom();
       return;
     }
     if (t === "tool_call" || t === "tool_result" || t === "tool_card") {
@@ -665,7 +668,8 @@
 
       box.appendChild(card);
     });
-    scrollFeed();
+    if (nearBottom()) scrollFeed();
+    else updateJumpBottom();
   }
 
   function escapeHtml(s) {
@@ -691,6 +695,7 @@
   }
 
   function appendMsg(role, content, streaming) {
+    const follow = nearBottom();
     clearEmpty();
     const safeRole = safeMsgRole(role);
     const div = document.createElement("div");
@@ -704,7 +709,8 @@
     div.appendChild(roleEl);
     div.appendChild(bodyEl);
     els.feed.appendChild(div);
-    scrollFeed();
+    if (follow) scrollFeed();
+    else updateJumpBottom();
     return div;
   }
 
@@ -715,10 +721,27 @@
 
   function scrollFeed() {
     els.feed.scrollTop = els.feed.scrollHeight;
+    updateJumpBottom();
   }
 
   function nearBottom() {
     return els.feed.scrollHeight - els.feed.scrollTop - els.feed.clientHeight < 96;
+  }
+
+  function updateJumpBottom() {
+    const btn = els.btnJumpBottom;
+    if (!btn) return;
+    const hasMsgs = !!els.feed.querySelector(".msg");
+    btn.hidden = !(hasMsgs && !nearBottom());
+  }
+
+  let jumpBottomRaf = 0;
+  function onFeedScroll() {
+    if (jumpBottomRaf) return;
+    jumpBottomRaf = requestAnimationFrame(() => {
+      jumpBottomRaf = 0;
+      updateJumpBottom();
+    });
   }
 
   function emptyStateHtml(title, body) {
@@ -740,6 +763,7 @@
       "Start a session",
       "New chat on the left — same history on desktop and phone. The hub keeps the transcript."
     );
+    updateJumpBottom();
   }
 
   function renderTranscript(session) {
@@ -753,6 +777,7 @@
         "Continue anywhere",
         "Same session on desktop and phone — history lives on the hub."
       );
+      updateJumpBottom();
       return;
     }
     msgs.forEach((m) => {
@@ -761,6 +786,7 @@
       if (m.tools && m.tools.length) renderTools(el, m.tools);
       if (m.cancelled) markCancelled(el);
     });
+    scrollFeed();
   }
 
   /** Merge server transcript into the feed without wiping scroll awkwardly. */
@@ -773,6 +799,7 @@
           "Same session on desktop and phone — history lives on the hub."
         );
       }
+      updateJumpBottom();
       return;
     }
     const stick = nearBottom();
@@ -804,6 +831,7 @@
       if (m.tools && m.tools.length) renderTools(el, m.tools);
     });
     if (stick) scrollFeed();
+    else updateJumpBottom();
   }
 
   async function catchUp() {
@@ -946,6 +974,7 @@
     const sess = await res.json();
     els.chatTitle.textContent = sess.title || "Chat";
     renderTranscript(sess);
+    updateJumpBottom();
     updateCtxMeter(sess);
     subscribeSession(id);
     const build = isBuildSession(sess) || isBuildSession(id);
@@ -1021,6 +1050,13 @@
       console.error(err);
       syncPrimaryButton();
     }
+  }
+
+  els.feed.addEventListener("scroll", onFeedScroll, { passive: true });
+  if (els.btnJumpBottom) {
+    els.btnJumpBottom.addEventListener("click", () => {
+      scrollFeed();
+    });
   }
 
   els.composer.addEventListener("submit", (e) => {
