@@ -24,14 +24,12 @@
     input: $("input"),
     composer: $("composer"),
     btnSend: $("btnSend"),
-    btnCancel: $("btnCancel"),
     btnNew: $("btnNew"),
     btnMenu: $("btnMenu"),
-    wsPill: $("wsPill"),
+    ctxMeter: $("ctxMeter"),
     modeBadge: $("modeBadge"),
     demoLink: $("demoLink"),
     btnRestart: $("btnRestart"),
-    hubStatus: $("hubStatus"),
   };
 
   let token = localStorage.getItem(TOKEN_KEY) || "";
@@ -190,10 +188,36 @@
     });
   }
 
+  function syncPrimaryButton() {
+    const btn = els.btnSend;
+    if (!btn) return;
+    const label = btn.querySelector(".btn-label");
+    const iconSend = btn.querySelector(".icon-send");
+    const iconStop = btn.querySelector(".icon-stop");
+    if (turnActive) {
+      btn.type = "button";
+      btn.classList.add("is-stop");
+      if (label) label.textContent = "Stop";
+      btn.setAttribute("aria-label", "Stop reply");
+      btn.title = "Stop";
+      if (iconSend) iconSend.hidden = true;
+      if (iconStop) iconStop.hidden = false;
+      btn.disabled = false;
+    } else {
+      btn.type = "submit";
+      btn.classList.remove("is-stop");
+      if (label) label.textContent = "Send";
+      btn.setAttribute("aria-label", "Send message");
+      btn.title = "Send";
+      if (iconSend) iconSend.hidden = false;
+      if (iconStop) iconStop.hidden = true;
+      btn.disabled = !activeId || sending;
+    }
+  }
+
   function setTurnActive(on) {
     turnActive = !!on;
-    if (els.btnCancel) els.btnCancel.disabled = !turnActive;
-    if (els.btnSend) els.btnSend.disabled = !activeId || turnActive || sending;
+    syncPrimaryButton();
   }
 
   function markCancelled(el) {
@@ -211,29 +235,65 @@
     return !!(ws && ws.readyState === WebSocket.OPEN);
   }
 
-  function pillLabel(state) {
-    if (state === "live") return "Live";
-    if (state === "sync") return "Sync";
-    if (state === "offline" || state === "off") return "Offline";
-    if (state === "…") return "…";
-    return state;
-  }
-
-  function setWsPill(state) {
-    els.wsPill.textContent = pillLabel(state);
-    els.wsPill.classList.toggle("ok", state === "live");
-    els.wsPill.classList.toggle("bad", state === "off" || state === "offline");
-    els.wsPill.classList.toggle("sync", state === "sync");
-    if (state === "live" && els.hubStatus && !els.hubStatus.hidden) {
-      els.hubStatus.hidden = true;
-      els.hubStatus.textContent = "";
-      if (els.btnRestart) els.btnRestart.disabled = false;
-    }
-  }
+  /** No-op: Live/hub pills removed; connection health uses banners only. */
+  function setWsPill(_state) {}
 
   function statusForDegraded() {
     if (typeof navigator !== "undefined" && navigator.onLine === false) return "offline";
     return "sync";
+  }
+
+  function formatCtxTokens(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v) || v < 0) return null;
+    if (v < 1000) return String(Math.round(v));
+    const k = v / 1000;
+    if (k < 10) return (Math.round(k * 10) / 10) + "k";
+    return Math.round(k) + "k";
+  }
+
+  function clearCtxMeter() {
+    if (!els.ctxMeter) return;
+    els.ctxMeter.textContent = "—";
+    els.ctxMeter.title = "Session context";
+    els.ctxMeter.classList.add("empty");
+  }
+
+  function updateCtxMeter(sess) {
+    if (!els.ctxMeter) return;
+    if (!sess) {
+      clearCtxMeter();
+      return;
+    }
+    const used = sess.context_tokens_used;
+    const limit = sess.context_window_tokens;
+    let pct = sess.context_window_usage;
+    if (used == null || limit == null || !(Number(limit) > 0)) {
+      clearCtxMeter();
+      return;
+    }
+    const usedN = Number(used);
+    const limitN = Number(limit);
+    if (!Number.isFinite(usedN) || !Number.isFinite(limitN)) {
+      clearCtxMeter();
+      return;
+    }
+    if (pct == null || !Number.isFinite(Number(pct))) {
+      pct = Math.round((usedN / limitN) * 100);
+    } else {
+      pct = Math.round(Number(pct));
+    }
+    const usedLabel = formatCtxTokens(usedN);
+    const limitLabel = formatCtxTokens(limitN);
+    els.ctxMeter.classList.remove("empty");
+    els.ctxMeter.textContent = "";
+    els.ctxMeter.appendChild(document.createTextNode(usedLabel + " / " + limitLabel + " "));
+    const pctEl = document.createElement("span");
+    pctEl.className = "ctx-pct";
+    pctEl.textContent = pct + "%";
+    els.ctxMeter.appendChild(pctEl);
+    els.ctxMeter.title =
+      "Context " + usedN.toLocaleString() + " / " + limitN.toLocaleString() + " tokens (" + pct + "%)";
   }
 
   function showInsecureBanner() {
@@ -317,12 +377,11 @@
     }
     // Subprotocol only — never put bearer in ?token= (proxy/access-log leakage).
     ws = new WebSocket(url, [subproto]);
-    if (!els.hubStatus || els.hubStatus.hidden) {
-      setWsPill(document.hidden ? statusForDegraded() : "…");
-    }
+    setWsPill(document.hidden ? statusForDegraded() : "…");
     ws.onopen = () => {
       setWsPill("live");
       reconnectDelay = RECONNECT_BASE_MS;
+      if (els.btnRestart) els.btnRestart.disabled = false;
       refreshPollState();
       if (activeId) subscribeSession(activeId);
       catchUp();
@@ -757,6 +816,7 @@
       if (sess.id !== activeId) return;
       if (sess.title) els.chatTitle.textContent = sess.title;
       mergeTranscript(sess);
+      updateCtxMeter(sess);
     } catch (_) {
       // Transient network — next poll / reconnect will retry
     } finally {
@@ -798,8 +858,11 @@
         ? (hint || "Unavailable")
         : (isBuildSession(activeId) ? "Message Grok Build…" : "Message Grok…");
     }
-    if (els.btnSend) els.btnSend.disabled = ro || !activeId || turnActive || sending;
-    if (els.btnCancel) els.btnCancel.disabled = ro || !turnActive;
+    if (ro) {
+      if (els.btnSend) els.btnSend.disabled = true;
+    } else {
+      syncPrimaryButton();
+    }
     let banner = document.getElementById("buildRoHint");
     if (ro) {
       if (!banner) {
@@ -883,6 +946,7 @@
     const sess = await res.json();
     els.chatTitle.textContent = sess.title || "Chat";
     renderTranscript(sess);
+    updateCtxMeter(sess);
     subscribeSession(id);
     const build = isBuildSession(sess) || isBuildSession(id);
     setComposerReadOnly(false);
@@ -936,13 +1000,13 @@
       setTurnActive(false);
     } finally {
       sending = false;
-      els.btnSend.disabled = !activeId || turnActive;
+      syncPrimaryButton();
     }
   }
 
   async function cancelTurn() {
     if (!token || !activeId || !turnActive) return;
-    if (els.btnCancel) els.btnCancel.disabled = true;
+    if (els.btnSend) els.btnSend.disabled = true;
     try {
       const res = await api("/api/sessions/" + encodeURIComponent(activeId) + "/cancel", {
         method: "POST",
@@ -951,16 +1015,20 @@
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         console.error("cancel failed", data);
-        if (els.btnCancel) els.btnCancel.disabled = !turnActive;
+        syncPrimaryButton();
       }
     } catch (err) {
       console.error(err);
-      if (els.btnCancel) els.btnCancel.disabled = !turnActive;
+      syncPrimaryButton();
     }
   }
 
   els.composer.addEventListener("submit", (e) => {
     e.preventDefault();
+    if (turnActive) {
+      cancelTurn();
+      return;
+    }
     const text = els.input.value.trim();
     if (!text || !activeId) return;
     sendMessage(text);
@@ -969,6 +1037,7 @@
   els.input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
+      if (turnActive) return;
       els.composer.requestSubmit();
     }
   });
@@ -978,7 +1047,13 @@
     els.input.style.height = Math.min(els.input.scrollHeight, 160) + "px";
   }
 
-  if (els.btnCancel) els.btnCancel.onclick = () => cancelTurn();
+  if (els.btnSend) {
+    els.btnSend.addEventListener("click", (e) => {
+      if (!turnActive) return;
+      e.preventDefault();
+      cancelTurn();
+    });
+  }
   els.btnNew.onclick = () => newSession();
   els.btnMenu.onclick = () => {
     els.sidebar.classList.add("open");
@@ -993,21 +1068,17 @@
   async function restartHub() {
     if (!token || !els.btnRestart) return;
     els.btnRestart.disabled = true;
-    els.hubStatus.hidden = false;
-    els.hubStatus.textContent = "restarting…";
-    els.hubStatus.classList.add("warn");
     setWsPill("…");
     try {
       const res = await api("/api/control/restart", { method: "POST", body: "{}" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        els.hubStatus.textContent = data.error || "restart failed";
+        console.error(data.error || "restart failed");
         els.btnRestart.disabled = false;
         return;
       }
-      els.hubStatus.textContent = "restarting…";
     } catch (err) {
-      els.hubStatus.textContent = "restarting…";
+      // Hub is likely restarting; WS reconnect will re-enable the button.
     }
   }
 
@@ -1054,6 +1125,7 @@
     setTurnActive(false);
     if (!activeId) {
       els.chatTitle.textContent = "Select a session";
+      clearCtxMeter();
       renderEmptySession();
     }
     refreshPollState();

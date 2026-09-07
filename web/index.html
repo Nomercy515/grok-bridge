@@ -47,8 +47,7 @@
         </div>
         <h1 class="chat-title" id="chatTitle">Select a session</h1>
         <div class="status-cluster" role="status" aria-live="polite">
-          <span class="pill" id="wsPill" title="Connection">…</span>
-          <span class="pill" id="hubStatus" hidden></span>
+          <span class="pill ctx-meter" id="ctxMeter" title="Session context">—</span>
         </div>
       </header>
 
@@ -64,17 +63,17 @@
             enterkeyhint="send"
             aria-label="Message Grok Bridge"
           ></textarea>
-          <button type="button" class="btn stop" id="btnCancel" disabled aria-label="Stop reply" title="Stop">
-            <span>Stop</span>
-          </button>
-          <button type="submit" class="btn send" id="btnSend" disabled aria-label="Send message">
-            <span>Send</span>
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <button type="submit" class="btn send" id="btnSend" disabled aria-label="Send message" title="Send">
+            <span class="btn-label">Send</span>
+            <svg class="icon-send" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
               <path d="M2 7h9M7 3l4 4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <svg class="icon-stop" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" hidden>
+              <rect x="3.5" y="3.5" width="7" height="7" rx="1.2" fill="currentColor"/>
             </svg>
           </button>
         </form>
-        <p class="composer-hint muted">Enter to send · Shift+Enter for newline · Stop cancels mid-reply</p>
+        <p class="composer-hint muted">Enter to send · Shift+Enter for newline · primary button becomes Stop mid-reply</p>
       </div>
     </main>
   </div>
