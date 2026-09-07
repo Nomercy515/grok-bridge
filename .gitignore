@@ -1,0 +1,30 @@
+bin/
+data/
+certs/
+*.pem
+*.tmp
+.idea/
+.vscode/
+*.exe
+grok-bridge
+data/sessions/
+data/auth.json
+data/restart.requested
+data/endpoint.json
+data/grok-bridge.env
+data/grok-bridge.endpoint.env
+*.secret
+.env
+data/*.env
+**/grok-bridge*.env
+
+# Brand iteration scratch (keep finals via force-add if needed)
+
+# Brand: ship logo + locked marks only
+brand/eyes/*
+!brand/eyes/FINAL.png
+!brand/eyes/FINAL-locked-user.png
+brand/logo-from-svg.png
+brand/logo-512.png
+brand/logo-square.png
+scripts/phase2-mock-valentine-relay.py

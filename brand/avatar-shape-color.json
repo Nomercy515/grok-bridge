@@ -1,0 +1,57 @@
+[
+  {
+    "color": "black",
+    "hex": "#000000",
+    "shape": "blob"
+  },
+  {
+    "color": "brown",
+    "hex": "#936439",
+    "shape": "pebble"
+  },
+  {
+    "color": "red",
+    "hex": "#ff263c",
+    "shape": "squircle"
+  },
+  {
+    "color": "orange",
+    "hex": "#ff6700",
+    "shape": "tablet"
+  },
+  {
+    "color": "yellow",
+    "hex": "#ff9800",
+    "shape": "capsule"
+  },
+  {
+    "color": "green",
+    "hex": "#00c972",
+    "shape": "hex"
+  },
+  {
+    "color": "cyan",
+    "hex": "#00bca6",
+    "shape": "wedge"
+  },
+  {
+    "color": "blue",
+    "hex": "#1084fe",
+    "shape": "cloud"
+  },
+  {
+    "color": "violet",
+    "hex": "#9159fe",
+    "shape": "teardrop"
+  },
+  {
+    "color": "magenta",
+    "hex": "#ff309b",
+    "shape": "shield"
+  },
+  {
+    "color": "gray",
+    "hex": "#777777",
+    "shape": "gem"
+  }
+]
