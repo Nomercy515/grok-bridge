@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +26,7 @@ import (
 	"grok-bridge/internal/bridge"
 	"grok-bridge/internal/buildsessions"
 	"grok-bridge/internal/endpoint"
+	"grok-bridge/internal/grokacp"
 	"grok-bridge/internal/restart"
 	"grok-bridge/internal/sessions"
 )
@@ -106,6 +109,7 @@ type Options struct {
 	BridgeSecret string
 	JobRegistry  *bridge.JobRegistry
 	WebFS        fs.FS
+	ACP          *grokacp.Manager
 }
 
 type Server struct {
@@ -116,8 +120,11 @@ type Server struct {
 	BridgeSecret string
 	WebFS        fs.FS
 	Mux          *http.ServeMux
+	ACP          *grokacp.Manager
 	turnsMu      sync.Mutex
 	turns        map[string]context.CancelFunc // sessionID -> cancel active turn
+	buildRawMu   sync.Mutex
+	buildRaw     map[string]string // bridge build:id -> raw ACP session UUID (active turn)
 }
 
 func NewServer(opts Options) (*Server, error) {
@@ -171,6 +178,10 @@ func NewServer(opts Options) (*Server, error) {
 	if opts.SeedDemo {
 		_, _ = store.EnsureDemoSessions()
 	}
+	acpMgr := opts.ACP
+	if acpMgr == nil {
+		acpMgr = grokacp.NewManagerFromEnv()
+	}
 	s := &Server{
 		Hub: h, Restart: rst,
 		PairLimiter:  auth.NewPairRateLimiter(5, 60),
@@ -178,7 +189,9 @@ func NewServer(opts Options) (*Server, error) {
 		BridgeSecret: secret,
 		WebFS:        opts.WebFS,
 		Mux:          http.NewServeMux(),
+		ACP:          acpMgr,
 		turns:        make(map[string]context.CancelFunc),
+		buildRaw:     make(map[string]string),
 	}
 	s.routes()
 	return s, nil
@@ -440,13 +453,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, sess)
 		return
 	}
-	if _, isBuild := buildsessions.StripPrefix(sid); isBuild {
-		writeJSON(w, 403, map[string]any{
-			"error": "build session is read-only",
-			"hint":  "sending/resuming Build sessions is not supported in v1",
-		})
-		return
-	}
 	if parts[1] == "messages" && r.Method == http.MethodPost {
 		s.handlePostMessage(w, r, sid)
 		return
@@ -492,6 +498,27 @@ func (s *Server) cancelTurn(sessionID string) bool {
 }
 
 func (s *Server) handleCancelSession(w http.ResponseWriter, r *http.Request, sid string) {
+	if _, isBuild := buildsessions.StripPrefix(sid); isBuild {
+		if sess, err := buildsessions.Get(sid); err != nil || sess == nil {
+			writeJSON(w, 404, map[string]any{"error": "not found"})
+			return
+		}
+		hadTurn := s.cancelTurn(sid)
+		raw := s.takeBuildRaw(sid)
+		if raw == "" {
+			if r2, _, err := buildsessions.ResolveMeta(sid); err == nil {
+				raw = r2
+			}
+		}
+		if raw != "" && s.ACP != nil {
+			_ = s.ACP.Client().Cancel(raw)
+		}
+		writeJSON(w, 200, map[string]any{
+			"ok": true, "session_id": sid,
+			"turn_cancelled": hadTurn, "jobs_cancelled": 0,
+		})
+		return
+	}
 	sess, _ := s.Hub.Store.Get(sid)
 	if sess == nil {
 		writeJSON(w, 404, map[string]any{"error": "not found"})
@@ -509,11 +536,6 @@ func (s *Server) handleCancelSession(w http.ResponseWriter, r *http.Request, sid
 }
 
 func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request, sid string) {
-	sess, _ := s.Hub.Store.Get(sid)
-	if sess == nil {
-		writeJSON(w, 404, map[string]any{"error": "not found"})
-		return
-	}
 	body := readJSON(r)
 	content, _ := body["content"].(string)
 	content = strings.TrimSpace(content)
@@ -521,10 +543,26 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request, sid s
 		writeJSON(w, 400, map[string]any{"error": "content required"})
 		return
 	}
+
+	run := s.runChat
+	if _, isBuild := buildsessions.StripPrefix(sid); isBuild {
+		if sess, err := buildsessions.Get(sid); err != nil || sess == nil {
+			writeJSON(w, 404, map[string]any{"error": "not found"})
+			return
+		}
+		run = s.runBuildChat
+	} else {
+		sess, _ := s.Hub.Store.Get(sid)
+		if sess == nil {
+			writeJSON(w, 404, map[string]any{"error": "not found"})
+			return
+		}
+	}
+
 	idCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		mid, err := s.runChat(context.Background(), sid, content, func(id string) {
+		mid, err := run(context.Background(), sid, content, func(id string) {
 			select {
 			case idCh <- id:
 			default:
@@ -543,7 +581,11 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request, sid s
 	case mid := <-idCh:
 		writeJSON(w, 200, map[string]any{"ok": true, "message_id": mid})
 	case err := <-errCh:
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		status := 500
+		if isAgentUnavailable(err) {
+			status = 503
+		}
+		writeJSON(w, status, map[string]any{"error": err.Error(), "hint": agentHint(err)})
 	case <-time.After(10 * time.Second):
 		writeJSON(w, 500, map[string]any{"error": "send failed"})
 	}
@@ -652,6 +694,129 @@ func (s *Server) runChat(parent context.Context, sessionID, content string, onUs
 	return messageID, nil
 }
 
+func (s *Server) setBuildRaw(bridgeID, rawID string) {
+	s.buildRawMu.Lock()
+	defer s.buildRawMu.Unlock()
+	if s.buildRaw == nil {
+		s.buildRaw = make(map[string]string)
+	}
+	s.buildRaw[bridgeID] = rawID
+}
+
+func (s *Server) takeBuildRaw(bridgeID string) string {
+	s.buildRawMu.Lock()
+	defer s.buildRawMu.Unlock()
+	raw := s.buildRaw[bridgeID]
+	delete(s.buildRaw, bridgeID)
+	return raw
+}
+
+func isAgentUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "cannot reach grok agent") ||
+		strings.Contains(msg, "not connected") ||
+		strings.Contains(msg, "auto-start failed") ||
+		strings.Contains(msg, "not found on path")
+}
+
+func agentHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	if isAgentUnavailable(err) {
+		return "start grok agent serve: grok agent --always-approve --no-leader serve --bind 127.0.0.1:2419 --secret <token> (or set GROK_BRIDGE_GROK_AGENT_AUTO_START=1)"
+	}
+	return ""
+}
+
+// runBuildChat resumes a Grok Build session via ACP and streams Bridge events.
+func (s *Server) runBuildChat(parent context.Context, sessionID, content string, onUserSaved func(string)) (string, error) {
+	lk := s.Hub.lockFor(sessionID)
+	lk.Lock()
+	defer lk.Unlock()
+
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	s.setTurnCancel(sessionID, cancel)
+	defer func() {
+		cancel()
+		s.clearTurnCancel(sessionID, cancel)
+		s.takeBuildRaw(sessionID)
+	}()
+
+	rawID, cwd, err := buildsessions.ResolveMeta(sessionID)
+	if err != nil {
+		return "", err
+	}
+	s.setBuildRaw(sessionID, rawID)
+
+	if s.ACP == nil {
+		return "", fmt.Errorf("ACP manager not configured")
+	}
+	client := s.ACP.Client()
+	if err := client.EnsureConnected(ctx); err != nil {
+		return "", err
+	}
+	if err := client.LoadSession(ctx, rawID, cwd); err != nil {
+		return "", fmt.Errorf("session/load: %w", err)
+	}
+
+	messageID := "build-live-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	if onUserSaved != nil {
+		onUserSaved(messageID)
+	}
+	s.Hub.Broadcast(map[string]any{
+		"type": "user_message", "session_id": sessionID,
+		"content": content, "message_id": messageID,
+	}, sessionID, nil)
+
+	ch, err := client.Prompt(ctx, sessionID, rawID, content)
+	if err != nil {
+		s.Hub.Broadcast(map[string]any{
+			"type": "assistant_done", "session_id": sessionID,
+			"content": "", "error": err.Error(), "hint": agentHint(err),
+		}, sessionID, nil)
+		return messageID, err
+	}
+
+	var fullText string
+	gotDone := false
+	for event := range ch {
+		et, _ := event["type"].(string)
+		switch et {
+		case "assistant_delta":
+			if d, ok := event["delta"].(string); ok {
+				fullText += d
+			}
+		case "assistant_done":
+			gotDone = true
+			if c, ok := event["content"].(string); ok && c != "" {
+				fullText = c
+			}
+		}
+		s.Hub.Broadcast(event, sessionID, nil)
+	}
+	if !gotDone {
+		s.Hub.Broadcast(map[string]any{
+			"type": "assistant_done", "session_id": sessionID,
+			"content": fullText, "cancelled": true, "error": "cancelled",
+		}, sessionID, nil)
+	}
+
+	// Refresh transcript from disk if the agent persisted the turn.
+	if sess, err := buildsessions.Get(sessionID); err == nil && sess != nil {
+		s.Hub.Broadcast(map[string]any{
+			"type": "session.snapshot", "session_id": sessionID, "session": sess,
+		}, sessionID, nil)
+	}
+	return messageID, nil
+}
+
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	selected := selectedWSProtocol(r)
 	up := upgrader
@@ -728,14 +893,18 @@ func (s *Server) handleWSMessage(conn *websocket.Conn, data map[string]any) {
 			_ = conn.WriteJSON(map[string]any{"type": "error", "error": "session_id and content required"})
 			return
 		}
-		if _, isBuild := buildsessions.StripPrefix(sid); isBuild {
-			_ = conn.WriteJSON(map[string]any{"type": "error", "error": "build session is read-only"})
-			return
-		}
-		sess, _ := s.Hub.Store.Get(sid)
-		if sess == nil {
-			_ = conn.WriteJSON(map[string]any{"type": "error", "error": "session not found"})
-			return
+		var isBuild bool
+		if _, isBuild = buildsessions.StripPrefix(sid); isBuild {
+			if sess, err := buildsessions.Get(sid); err != nil || sess == nil {
+				_ = conn.WriteJSON(map[string]any{"type": "error", "error": "session not found"})
+				return
+			}
+		} else {
+			sess, _ := s.Hub.Store.Get(sid)
+			if sess == nil {
+				_ = conn.WriteJSON(map[string]any{"type": "error", "error": "session not found"})
+				return
+			}
 		}
 		s.Hub.mu.Lock()
 		if s.Hub.clients[conn] == nil {
@@ -744,6 +913,16 @@ func (s *Server) handleWSMessage(conn *websocket.Conn, data map[string]any) {
 		s.Hub.clients[conn][sid] = struct{}{}
 		s.Hub.mu.Unlock()
 		go func() {
+			if isBuild {
+				_, err := s.runBuildChat(context.Background(), sid, content, nil)
+				if err != nil {
+					s.Hub.Broadcast(map[string]any{
+						"type": "assistant_done", "session_id": sid,
+						"content": "", "error": err.Error(), "hint": agentHint(err),
+					}, sid, nil)
+				}
+				return
+			}
 			_, _ = s.runChat(context.Background(), sid, content, nil)
 		}()
 	default:

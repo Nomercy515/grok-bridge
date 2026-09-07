@@ -152,3 +152,16 @@ See `docs/UI_NOTES.md`. Events: `tool_call` / `tool_result` / optional `tool_car
 - `POST /bridge/v1/jobs/{id}/cancel` (bridge secret)
 - UI **Stop** while streaming; WS `assistant_done` with `cancelled: true`
 - Agent may `GET status_url` and stop if `status` is `cancelled`
+
+
+## Grok Build ACP (live resume)
+
+Bridge-native webhook/demo sessions are unchanged. For `build:<uuid>` sessions the hub talks to a local `grok agent serve` over WebSocket JSON-RPC (ACP):
+
+1. `initialize`
+2. `session/load` (raw UUID + `cwd` from `summary.json`)
+3. `session/prompt` → stream `session/update` → Bridge `assistant_delta` / `tool_*` / `assistant_done`
+4. Cancel → ACP `session/cancel` notification
+
+Env: `GROK_BRIDGE_GROK_AGENT_WS`, `GROK_BRIDGE_GROK_AGENT_SECRET`, optional `GROK_BRIDGE_GROK_AGENT_AUTO_START=1`.
+See `internal/grokacp` and `docs/grok-bridge.env.example`.

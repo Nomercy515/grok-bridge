@@ -110,8 +110,12 @@ func TestListAndGetNested(t *testing.T) {
 	if err != nil || sess == nil {
 		t.Fatalf("get: %v", err)
 	}
-	if !sess.ReadOnly || sess.Source != "build" {
-		t.Fatalf("flags: %+v", sess)
+	if sess.ReadOnly || sess.Source != "build" {
+		t.Fatalf("flags: %+v (want live build, not readonly)", sess)
+	}
+	raw, cwd, err := ResolveMeta("build:" + sid)
+	if err != nil || raw != sid || cwd != "/Users/me/proj" {
+		t.Fatalf("ResolveMeta: raw=%q cwd=%q err=%v", raw, cwd, err)
 	}
 	if len(sess.Messages) != 3 {
 		t.Fatalf("messages=%d %+v", len(sess.Messages), sess.Messages)

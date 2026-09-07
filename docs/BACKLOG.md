@@ -22,4 +22,5 @@
 
 ## Done (recent)
 
+- Grok Build live send/receive via ACP (`session/load` + `session/prompt`, streaming) — composer unlocked; env-agnostic agent WS
 - Env-agnostic Grok Build session list+open (read-only) — `6254bcc`

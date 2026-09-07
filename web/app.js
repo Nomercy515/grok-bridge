@@ -192,10 +192,6 @@
 
   function setTurnActive(on) {
     turnActive = !!on;
-    if (isBuildSession(activeId)) {
-      setComposerReadOnly(true);
-      return;
-    }
     if (els.btnCancel) els.btnCancel.disabled = !turnActive;
     if (els.btnSend) els.btnSend.disabled = !activeId || turnActive || sending;
   }
@@ -403,11 +399,37 @@
         streamingEl.classList.remove("streaming");
         if (data.content) streamingEl.querySelector(".body").textContent = data.content;
         if (data.cancelled || data.error === "cancelled") markCancelled(streamingEl);
+        if (data.error && data.error !== "cancelled") {
+          const note = document.createElement("div");
+          note.className = "cancel-note";
+          note.textContent = data.hint || data.error;
+          streamingEl.appendChild(note);
+        }
+      } else if (data.error && data.error !== "cancelled") {
+        const el = appendMsg("assistant", data.error);
+        if (data.hint) {
+          const note = document.createElement("div");
+          note.className = "cancel-note";
+          note.textContent = data.hint;
+          el.appendChild(note);
+        }
       }
       streamingEl = null;
       streamingTools = null;
       setTurnActive(false);
       refreshSessions();
+      return;
+    }
+    if (t === "error") {
+      setTurnActive(false);
+      const msg = data.error || "error";
+      const el = appendMsg("assistant", msg);
+      if (data.hint) {
+        const note = document.createElement("div");
+        note.className = "cancel-note";
+        note.textContent = data.hint;
+        el.appendChild(note);
+      }
       return;
     }
   }
@@ -765,7 +787,7 @@
   function isBuildSession(sOrId) {
     if (!sOrId) return false;
     if (typeof sOrId === "string") return sOrId.indexOf("build:") === 0;
-    return sOrId.source === "build" || (sOrId.id && String(sOrId.id).indexOf("build:") === 0) || !!sOrId.readonly;
+    return sOrId.source === "build" || (sOrId.id && String(sOrId.id).indexOf("build:") === 0);
   }
 
   function setComposerReadOnly(on, hint) {
@@ -773,8 +795,8 @@
     if (els.input) {
       els.input.disabled = ro;
       els.input.placeholder = ro
-        ? (hint || "Build session (read-only)")
-        : "Message Grok…";
+        ? (hint || "Unavailable")
+        : (isBuildSession(activeId) ? "Message Grok Build…" : "Message Grok…");
     }
     if (els.btnSend) els.btnSend.disabled = ro || !activeId || turnActive || sending;
     if (els.btnCancel) els.btnCancel.disabled = ro || !turnActive;
@@ -788,10 +810,30 @@
         const host = els.composer && els.composer.parentNode;
         if (host) host.insertBefore(banner, els.composer);
       }
-      banner.textContent = hint || "Grok Build session — view only (send/resume not wired in v1).";
+      banner.textContent = hint || "Composer locked.";
       banner.hidden = false;
     } else if (banner) {
       banner.hidden = true;
+    }
+  }
+
+  function setBuildSessionChrome(on) {
+    let banner = document.getElementById("buildRoHint");
+    if (on) {
+      if (!banner) {
+        banner = document.createElement("div");
+        banner.id = "buildRoHint";
+        banner.className = "build-ro-hint";
+        banner.setAttribute("role", "status");
+        const host = els.composer && els.composer.parentNode;
+        if (host) host.insertBefore(banner, els.composer);
+      }
+      banner.textContent = "via Grok Build (ACP)";
+      banner.hidden = false;
+      if (els.input) els.input.placeholder = "Message Grok Build…";
+    } else if (banner) {
+      banner.hidden = true;
+      if (els.input) els.input.placeholder = "Message Grok…";
     }
   }
 
@@ -808,7 +850,7 @@
         const badge = document.createElement("span");
         badge.className = "src-badge build";
         badge.textContent = "Build";
-        badge.title = "On-disk Grok Build session";
+        badge.title = "Grok Build session (live via ACP)";
         btn.querySelector(".t-row").appendChild(badge);
       }
       const meta = btn.querySelector(".m");
@@ -843,11 +885,10 @@
     renderTranscript(sess);
     subscribeSession(id);
     const build = isBuildSession(sess) || isBuildSession(id);
-    setComposerReadOnly(build);
-    if (!build) {
-      els.btnSend.disabled = false;
-      setTurnActive(false);
-    }
+    setComposerReadOnly(false);
+    setBuildSessionChrome(build);
+    els.btnSend.disabled = false;
+    setTurnActive(false);
     try { history.replaceState(null, "", (DEMO ? "/?demo=1" : "/") + "#s=" + encodeURIComponent(id)); } catch (_) {}
   }
 
@@ -863,10 +904,6 @@
 
   async function sendMessage(text) {
     if (!text || !activeId || sending || turnActive) return;
-    if (isBuildSession(activeId)) {
-      setComposerReadOnly(true);
-      return;
-    }
     sending = true;
     els.btnSend.disabled = true;
     setTurnActive(true);

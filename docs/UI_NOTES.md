@@ -44,11 +44,13 @@ Dark greyscale contrast kept high on primary text; focus rings on interactive co
 - Calls `POST /api/sessions/{id}/cancel` with the pairing bearer.
 - Cancelled turns show a small **Cancelled** note on the assistant bubble (`assistant_done.cancelled` or persisted `message.cancelled`).
 
-## Grok Build sessions (v1)
+## Grok Build sessions (live via ACP)
 
 The session rail merges hub-native chats (`source: "bridge"`) with on-disk Grok Build sessions (`source: "build"`, ids `build:<session-id>`).
 
 - Point the hub at a Grok home via `GROK_BRIDGE_GROK_HOME` (preferred) or `GROK_HOME`, else `~/.grok`.
 - Expected layout: `$GROK_HOME/sessions/<url.PathEscape(cwd)>/<session-id>/summary.json` + `chat_history.jsonl` (flat `sessions/<id>/` also tolerated).
-- Opening a Build session loads the transcript read-only; the composer is disabled (no send/resume/ACP in v1).
+- Opening a Build session loads history from disk; the composer stays enabled. Sending resumes the real session over Grok ACP (`session/load` → `session/prompt`) and streams `assistant_delta` / tool events back on the Bridge WebSocket.
+- Status chip: **via Grok Build (ACP)**. Badge **Build** remains.
+- If `grok agent serve` is unreachable, send returns a clear 503 / UI error (not a silent read-only lock). Configure `GROK_BRIDGE_GROK_AGENT_WS` + `GROK_BRIDGE_GROK_AGENT_SECRET`, or set `GROK_BRIDGE_GROK_AGENT_AUTO_START=1`.
 - Missing Grok home → empty Build list; hub-native sessions unchanged.
