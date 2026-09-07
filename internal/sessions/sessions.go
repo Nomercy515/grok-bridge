@@ -88,6 +88,10 @@ type Session struct {
 	Messages  []Message `json:"messages"`
 	Source    string    `json:"source,omitempty"`   // "bridge" | "build"
 	ReadOnly  bool      `json:"readonly,omitempty"` // reserved; Build sessions are live via ACP
+	// Context window usage (from Grok Build signals.json when available).
+	ContextTokensUsed   *int `json:"context_tokens_used,omitempty"`
+	ContextWindowTokens *int `json:"context_window_tokens,omitempty"`
+	ContextWindowUsage  *int `json:"context_window_usage,omitempty"` // percent
 }
 
 type SessionSummary struct {

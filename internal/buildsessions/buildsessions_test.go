@@ -167,3 +167,63 @@ func TestGetMissing(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestGetContextFromSignals(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GROK_BRIDGE_GROK_HOME", home)
+	t.Setenv("GROK_HOME", "")
+
+	sid := "sess-ctx-1"
+	dir := writeFixture(t, home, "/Users/me/proj", sid, map[string]any{
+		"info":              map[string]any{"id": sid, "cwd": "/Users/me/proj"},
+		"generated_title":   "Context meter",
+		"updated_at":        "2026-09-06T18:30:00Z",
+		"num_chat_messages": 1,
+	}, []string{
+		`{"id":"m1","role":"user","content":"hi","timestamp":"2026-09-06T18:00:00Z"}`,
+	})
+	signals := map[string]any{
+		"contextTokensUsed":   310965,
+		"contextWindowTokens": 500000,
+		"contextWindowUsage":  62,
+	}
+	b, _ := json.MarshalIndent(signals, "", "  ")
+	if err := os.WriteFile(filepath.Join(dir, "signals.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := Get("build:" + sid)
+	if err != nil || sess == nil {
+		t.Fatalf("get: %v", err)
+	}
+	if sess.ContextTokensUsed == nil || *sess.ContextTokensUsed != 310965 {
+		t.Fatalf("context_tokens_used=%v", sess.ContextTokensUsed)
+	}
+	if sess.ContextWindowTokens == nil || *sess.ContextWindowTokens != 500000 {
+		t.Fatalf("context_window_tokens=%v", sess.ContextWindowTokens)
+	}
+	if sess.ContextWindowUsage == nil || *sess.ContextWindowUsage != 62 {
+		t.Fatalf("context_window_usage=%v", sess.ContextWindowUsage)
+	}
+}
+
+func TestGetWithoutSignalsOmitsContext(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GROK_BRIDGE_GROK_HOME", home)
+	t.Setenv("GROK_HOME", "")
+	sid := "sess-no-sig"
+	writeFixture(t, home, "/tmp", sid, map[string]any{
+		"info":  map[string]any{"id": sid},
+		"title": "No signals",
+	}, []string{
+		`{"role":"user","content":"hi"}`,
+	})
+	sess, err := Get("build:" + sid)
+	if err != nil || sess == nil {
+		t.Fatalf("get: %v", err)
+	}
+	if sess.ContextTokensUsed != nil || sess.ContextWindowTokens != nil || sess.ContextWindowUsage != nil {
+		t.Fatalf("expected omitted context fields, got used=%v window=%v usage=%v",
+			sess.ContextTokensUsed, sess.ContextWindowTokens, sess.ContextWindowUsage)
+	}
+}

@@ -90,7 +90,7 @@ func Get(id string) (*sessions.Session, error) {
 	if updated == 0 && len(msgs) > 0 {
 		updated = msgs[len(msgs)-1].TS
 	}
-	return &sessions.Session{
+	sess := &sessions.Session{
 		ID:        WithPrefix(raw),
 		Title:     title,
 		CreatedAt: created,
@@ -98,7 +98,9 @@ func Get(id string) (*sessions.Session, error) {
 		Messages:  msgs,
 		Source:    "build",
 		ReadOnly:  false, // live send/receive via Grok ACP
-	}, nil
+	}
+	applySignals(sess, filepath.Join(dir, "signals.json"))
+	return sess, nil
 }
 
 // ResolveMeta returns the raw session UUID and cwd for ACP session/load.
@@ -193,6 +195,34 @@ func fileExists(p string) bool {
 
 func pathUnescape(s string) (string, error) {
 	return url.PathUnescape(s)
+}
+
+
+// signals.json (beside summary.json) carries live context-window usage from Grok Build.
+type rawSignals struct {
+	ContextTokensUsed   *int `json:"contextTokensUsed"`
+	ContextWindowTokens *int `json:"contextWindowTokens"`
+	ContextWindowUsage  *int `json:"contextWindowUsage"`
+}
+
+func applySignals(sess *sessions.Session, path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var sig rawSignals
+	if json.Unmarshal(b, &sig) != nil {
+		return
+	}
+	if sig.ContextTokensUsed != nil {
+		sess.ContextTokensUsed = sig.ContextTokensUsed
+	}
+	if sig.ContextWindowTokens != nil {
+		sess.ContextWindowTokens = sig.ContextWindowTokens
+	}
+	if sig.ContextWindowUsage != nil {
+		sess.ContextWindowUsage = sig.ContextWindowUsage
+	}
 }
 
 // Flexible summary.json decode.

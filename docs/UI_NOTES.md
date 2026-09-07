@@ -19,11 +19,10 @@ Product chrome for the hub web client.
 
 ## Affordances
 
-- **Live pill** — orbit pulse when WebSocket is open
-- **Sync / Offline** — degraded chips when polling or offline
+- **Context meter** — topbar `#ctxMeter` shows active session context (`311k / 500k 62%`); tooltip has exact tokens + %. Build `signals.json` fields; `—` when unknown. Live/hub status pills removed (connection health via insecure/degraded banners only).
 - **Streaming** — caret + light shimmer on assistant bubble
 - **Session rail** — active left hairline, relative time meta
-- **Composer** — floating card; Enter send / Shift+Enter newline
+- **Composer** — floating card; Enter send / Shift+Enter newline; single primary button morphs Send ↔ Stop
 - **Brand mark** — geometric orbit glyph (original)
 
 ## Accessibility
@@ -40,8 +39,8 @@ Dark greyscale contrast kept high on primary text; focus rings on interactive co
 
 ## Cancel / Stop (Phase 4)
 
-- **Stop** button next to Send; enabled only while a turn is active (after send / `assistant_start`, until `assistant_done`).
-- Calls `POST /api/sessions/{id}/cancel` with the pairing bearer.
+- One primary composer button (`#btnSend`): **Send** when idle; morphs to **Stop** while a turn is active (`turnActive` after send / `assistant_start`, until `assistant_done`). Never show both.
+- Stop click calls `POST /api/sessions/{id}/cancel` with the pairing bearer; `aria-label` / title switch with the mode.
 - Cancelled turns show a small **Cancelled** note on the assistant bubble (`assistant_done.cancelled` or persisted `message.cancelled`).
 
 ## Grok Build sessions (live via ACP)
@@ -54,3 +53,7 @@ The session rail merges hub-native chats (`source: "bridge"`) with on-disk Grok 
 - Status chip: **via Grok Build (ACP)**. Badge **Build** remains.
 - If `grok agent serve` is unreachable, send returns a clear 503 / UI error (not a silent read-only lock). Configure `GROK_BRIDGE_GROK_AGENT_WS` + `GROK_BRIDGE_GROK_AGENT_SECRET`, or set `GROK_BRIDGE_GROK_AGENT_AUTO_START=1`.
 - Missing Grok home → empty Build list; hub-native sessions unchanged.
+
+## Context meter
+
+Header readout for the **active** chat session window usage (`#ctxMeter`). Build sessions populate `context_tokens_used`, `context_window_tokens`, and `context_window_usage` from `signals.json` beside `summary.json` when `Get` loads the session. Hub-native sessions omit these until known (UI shows `—`).
