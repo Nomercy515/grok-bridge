@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -390,6 +391,17 @@ func parseHistoryLine(line string, idx int) (sessions.Message, bool) {
 	if len(content) > 200_000 {
 		return sessions.Message{}, false
 	}
+	if role == "user" {
+		if unwrapped, ok := unwrapUserQueries(content); ok {
+			content = unwrapped
+		} else if isSyntheticUserNoise(m, content) {
+			// Reminder / user_info-only lines are not "You" bubbles.
+			return sessions.Message{}, false
+		}
+		if strings.TrimSpace(content) == "" {
+			return sessions.Message{}, false
+		}
+	}
 	id := strField(m, "id")
 	if id == "" {
 		id = strField(m, "message_id")
@@ -410,6 +422,57 @@ func parseHistoryLine(line string, idx int) (sessions.Message, bool) {
 		Content: content,
 		TS:      ts,
 	}, true
+}
+
+var userQueryRe = regexp.MustCompile(`(?is)<user_query>(.*?)</user_query>`)
+
+// RE2 has no backrefs — strip each known synthetic wrapper separately.
+var syntheticBlockRes = []*regexp.Regexp{
+	regexp.MustCompile(`(?is)<system-reminder(?:\s[^>]*)?>[\s\S]*?</system-reminder>`),
+	regexp.MustCompile(`(?is)<user_info(?:\s[^>]*)?>[\s\S]*?</user_info>`),
+}
+
+// unwrapUserQueries extracts inner text from complete <user_query>…</user_query>
+// blocks (case-insensitive). When present, joined inners become Message.Content
+// so the UI shows a normal You bubble instead of tagged wrappers.
+func unwrapUserQueries(content string) (string, bool) {
+	matches := userQueryRe.FindAllStringSubmatch(content, -1)
+	if len(matches) == 0 {
+		return content, false
+	}
+	parts := make([]string, 0, len(matches))
+	for _, m := range matches {
+		parts = append(parts, m[1])
+	}
+	return strings.Join(parts, "\n"), true
+}
+
+func stripSyntheticBlocks(s string) (stripped string, had bool) {
+	stripped = s
+	for _, re := range syntheticBlockRes {
+		if re.MatchString(stripped) {
+			had = true
+			stripped = re.ReplaceAllString(stripped, "")
+		}
+	}
+	return strings.TrimSpace(stripped), had
+}
+
+// isSyntheticUserNoise reports user-role lines that are only Bridge/Grok
+// scaffolding (system-reminder, user_info, synthetic_reason) with no user_query.
+func isSyntheticUserNoise(m map[string]any, content string) bool {
+	if userQueryRe.MatchString(content) {
+		return false
+	}
+	if reason := strField(m, "synthetic_reason"); reason != "" {
+		return true
+	}
+	s := strings.TrimSpace(content)
+	if s == "" {
+		return true
+	}
+	stripped, had := stripSyntheticBlocks(s)
+	return had && stripped == ""
 }
 
 func strField(m map[string]any, key string) string {

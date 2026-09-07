@@ -32,7 +32,7 @@ Chat bodies use `formatMessageHTML` / `setMsgBody` (not raw `textContent`):
 
 - **Bold** — complete `**pairs**` only become `<strong>`; unmatched `**` stay literal. Escape HTML before bold so user markup cannot inject tags.
 - **System reminders** — complete `<system-reminder>…</system-reminder>` blocks (case-insensitive) render as a muted `.sys-reminder` aside with a “System reminder” label (not as Grok answer text). Inner text still gets escape + bold.
-- **User query** — complete `<user_query>…</user_query>` blocks render as a `.user-query` aside (label “User query”); the wrapper tags are not shown as raw chat text.
+- **User query** — complete `<user_query>…</user_query>` blocks are unwrapped into the normal You/message body (inner text only; no labeled aside). Build history load prefers the unwrapped query as `Message.Content` and skips reminder-only synthetic user lines.
 - Streaming keeps `data-raw` on `.body` and re-formats on each delta / `assistant_done` / merge.
 
 ## Accessibility

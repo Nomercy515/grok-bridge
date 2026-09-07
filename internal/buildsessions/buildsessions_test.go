@@ -227,3 +227,69 @@ func TestGetWithoutSignalsOmitsContext(t *testing.T) {
 			sess.ContextTokensUsed, sess.ContextWindowTokens, sess.ContextWindowUsage)
 	}
 }
+
+func TestUnwrapUserQueryAndSkipSynthetic(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GROK_BRIDGE_GROK_HOME", home)
+	t.Setenv("GROK_HOME", "")
+
+	sid := "sess-unwrap-1"
+	writeFixture(t, home, "/tmp/proj", sid, map[string]any{
+		"info":              map[string]any{"id": sid, "cwd": "/tmp/proj"},
+		"generated_title":   "Unwrap query",
+		"updated_at":        "2026-09-07T12:00:00Z",
+		"num_chat_messages": 2,
+	}, []string{
+		// Reminder-only user line → skipped (not a You bubble)
+		`{"id":"noise1","role":"user","content":"<system-reminder>Always follow the rules.</system-reminder>","timestamp":"2026-09-07T12:00:00Z"}`,
+		// user_info-only → skipped
+		`{"id":"noise2","role":"user","content":"<user_info>\nOS: Linux\n</user_info>","timestamp":"2026-09-07T12:00:01Z"}`,
+		// synthetic_reason without user_query → skipped
+		`{"id":"noise3","role":"user","synthetic_reason":"context_inject","content":"injected scaffolding","timestamp":"2026-09-07T12:00:02Z"}`,
+		// Wrapped query alone → unwrapped to plain text
+		`{"id":"m1","role":"user","content":"<user_query>hi there</user_query>","timestamp":"2026-09-07T12:01:00Z"}`,
+		`{"id":"m2","role":"assistant","content":"Hello!","timestamp":"2026-09-07T12:01:05Z"}`,
+		// Query with surrounding reminder → prefer unwrapped query inners
+		`{"id":"m3","role":"user","content":"<system-reminder>note</system-reminder>\n<user_query>fix the bug</user_query>","timestamp":"2026-09-07T12:02:00Z"}`,
+		// Case-insensitive tag
+		`{"id":"m4","role":"user","content":"<USER_QUERY>Case OK</USER_QUERY>","timestamp":"2026-09-07T12:03:00Z"}`,
+		// Plain user text still works
+		`{"id":"m5","role":"user","content":"plain hi","timestamp":"2026-09-07T12:04:00Z"}`,
+	})
+
+	sess, err := Get("build:" + sid)
+	if err != nil || sess == nil {
+		t.Fatalf("get: %v", err)
+	}
+
+	var users []string
+	for _, m := range sess.Messages {
+		if m.Role == "user" {
+			users = append(users, m.Content)
+		}
+	}
+	want := []string{"hi there", "fix the bug", "Case OK", "plain hi"}
+	if len(users) != len(want) {
+		t.Fatalf("user msgs=%d %+v want %d %+v (all msgs=%+v)", len(users), users, len(want), want, sess.Messages)
+	}
+	for i := range want {
+		if users[i] != want[i] {
+			t.Fatalf("users[%d]=%q want %q", i, users[i], want[i])
+		}
+	}
+}
+
+func TestUnwrapUserQueriesHelper(t *testing.T) {
+	got, ok := unwrapUserQueries(`<user_query>a</user_query>`)
+	if !ok || got != "a" {
+		t.Fatalf("simple: got=%q ok=%v", got, ok)
+	}
+	got, ok = unwrapUserQueries(`pre <user_query>one</user_query> mid <user_query>two</user_query>`)
+	if !ok || got != "one\ntwo" {
+		t.Fatalf("multi: got=%q ok=%v", got, ok)
+	}
+	got, ok = unwrapUserQueries("no tags here")
+	if ok || got != "no tags here" {
+		t.Fatalf("none: got=%q ok=%v", got, ok)
+	}
+}
