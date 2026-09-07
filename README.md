@@ -73,11 +73,12 @@ tailscaled → grok-bridge-endpoint (endpoint.json + TLS SANs) → grok-bridge (
 
 ```bash
 git clone <this-repo> && cd grok-bridge
-go build -o bin/grok-bridge ./cmd/grok-bridge
 ./start.sh
 # Open http://127.0.0.1:4020/?demo=1
 # Pairing code is printed in the terminal on first start
 ```
+
+`start.sh` auto-checks and installs Go (≥ 1.22), curl, and git when possible (set `SKIP_PREREQ_INSTALL=1` to check only). Full Tailscale + systemd setup: `scripts/install.sh`.
 
 Supervised (recommended):
 
