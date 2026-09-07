@@ -3,6 +3,7 @@ package buildsessions
 import (
 	"bufio"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -59,7 +60,7 @@ func List() []sessions.SessionSummary {
 }
 
 // Get loads a Build session by API id ("build:<id>") or raw id.
-// Returns a sessions.Session shaped for the hub UI (read-only).
+// Returns a sessions.Session shaped for the hub UI (send/resume via ACP).
 func Get(id string) (*sessions.Session, error) {
 	raw, ok := StripPrefix(id)
 	if !ok {
@@ -96,8 +97,45 @@ func Get(id string) (*sessions.Session, error) {
 		UpdatedAt: updated,
 		Messages:  msgs,
 		Source:    "build",
-		ReadOnly:  true,
+		ReadOnly:  false, // live send/receive via Grok ACP
 	}, nil
+}
+
+// ResolveMeta returns the raw session UUID and cwd for ACP session/load.
+func ResolveMeta(id string) (rawID, cwd string, err error) {
+	raw, ok := StripPrefix(id)
+	if !ok {
+		raw = id
+	}
+	if raw == "" || strings.Contains(raw, "..") || strings.ContainsAny(raw, `/\`) {
+		return "", "", os.ErrNotExist
+	}
+	dir, err := findSessionDir(raw)
+	if err != nil || dir == "" {
+		return "", "", os.ErrNotExist
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "summary.json"))
+	if err != nil {
+		return "", "", err
+	}
+	var rawSum rawSummary
+	if json.Unmarshal(b, &rawSum) != nil {
+		return "", "", os.ErrNotExist
+	}
+	cwd = strings.TrimSpace(rawSum.Info.Cwd)
+	if cwd == "" {
+		// Nested layout: sessions/<escaped-cwd>/<id>/ — best-effort unescape
+		parent := filepath.Base(filepath.Dir(dir))
+		if parent != "" && parent != "sessions" && parent != raw {
+			if u, e := pathUnescape(parent); e == nil && u != "" {
+				cwd = u
+			}
+		}
+	}
+	if cwd == "" {
+		cwd = "."
+	}
+	return raw, cwd, nil
 }
 
 func findSessionDir(rawID string) (string, error) {
@@ -151,6 +189,10 @@ func findSessionDir(rawID string) (string, error) {
 func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir()
+}
+
+func pathUnescape(s string) (string, error) {
+	return url.PathUnescape(s)
 }
 
 // Flexible summary.json decode.

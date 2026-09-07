@@ -18,6 +18,7 @@ import (
 	"grok-bridge/internal/agent"
 	"grok-bridge/internal/auth"
 	"grok-bridge/internal/bridge"
+	"grok-bridge/internal/grokacp"
 	"grok-bridge/internal/hub"
 	"grok-bridge/internal/restart"
 	"grok-bridge/internal/sessions"
@@ -809,7 +810,10 @@ func TestBuildSessionsMerged(t *testing.T) {
 	if res2.StatusCode != 200 {
 		t.Fatalf("%d %v", res2.StatusCode, sess)
 	}
-	if sess["readonly"] != true || sess["source"] != "build" {
+	if sess["readonly"] == true {
+		t.Fatalf("build sessions should not be readonly: %v", sess)
+	}
+	if sess["source"] != "build" {
 		t.Fatalf("%v", sess)
 	}
 	msgs, _ := sess["messages"].([]any)
@@ -817,14 +821,18 @@ func TestBuildSessionsMerged(t *testing.T) {
 		t.Fatalf("msgs=%v", sess["messages"])
 	}
 
-	// Read-only: POST messages rejected
+	// Without ACP agent: clear 503 (not silent read-only 403)
 	req3, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions/build%3A"+sid+"/messages",
 		strings.NewReader(`{"content":"nope"}`))
 	req3.Header = authHeader()
 	res3, _ := http.DefaultClient.Do(req3)
 	defer res3.Body.Close()
-	if res3.StatusCode != 403 {
-		t.Fatalf("want 403 got %d", res3.StatusCode)
+	if res3.StatusCode == 403 {
+		t.Fatal("build send must not return 403 read-only")
+	}
+	if res3.StatusCode != 503 && res3.StatusCode != 500 {
+		body, _ := io.ReadAll(res3.Body)
+		t.Fatalf("want 503/500 when agent missing, got %d %s", res3.StatusCode, body)
 	}
 }
 
@@ -857,5 +865,153 @@ func TestNoGrokHomeBridgeOnly(t *testing.T) {
 	}
 	if len(body.Sessions) < 1 {
 		t.Fatal("expected bridge session")
+	}
+}
+
+// fakeBuildACP serves a minimal ACP WebSocket for hub integration tests.
+type fakeBuildACP struct {
+	up websocket.Upgrader
+}
+
+func (f *fakeBuildACP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/ws" {
+		http.NotFound(w, r)
+		return
+	}
+	conn, err := f.up.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	for {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		var msg map[string]any
+		if json.Unmarshal(data, &msg) != nil {
+			continue
+		}
+		method, _ := msg["method"].(string)
+		id := msg["id"]
+		params, _ := msg["params"].(map[string]any)
+		switch method {
+		case "initialize":
+			_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"protocolVersion": 1}})
+		case "session/load":
+			_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": id, "result": nil})
+		case "session/prompt":
+			sid, _ := params["sessionId"].(string)
+			_ = conn.WriteJSON(map[string]any{
+				"jsonrpc": "2.0", "method": "session/update",
+				"params": map[string]any{
+					"sessionId": sid,
+					"update": map[string]any{
+						"sessionUpdate": "agent_message_chunk",
+						"content":       map[string]any{"type": "text", "text": "live-ok"},
+					},
+				},
+			})
+			_ = conn.WriteJSON(map[string]any{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]any{"stopReason": "end_turn"},
+			})
+		case "session/cancel":
+		default:
+			if id != nil {
+				_ = conn.WriteJSON(map[string]any{
+					"jsonrpc": "2.0", "id": id,
+					"error": map[string]any{"code": -32601, "message": "unknown"},
+				})
+			}
+		}
+	}
+}
+
+func TestBuildSessionLiveSendViaACP(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GROK_BRIDGE_GROK_HOME", home)
+	t.Setenv("GROK_HOME", "")
+
+	sid := "live-build-1"
+	dir := filepath.Join(home, "sessions", "proj", sid)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	summary := map[string]any{
+		"info":            map[string]any{"id": sid, "cwd": "/proj"},
+		"generated_title": "Live",
+		"updated_at":      9999999999.0,
+	}
+	b, _ := json.Marshal(summary)
+	_ = os.WriteFile(filepath.Join(dir, "summary.json"), b, 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "chat_history.jsonl"), []byte(
+		`{"role":"user","content":"prior"}`+"\n",
+	), 0o644)
+
+	fake := &fakeBuildACP{up: websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}}
+	acpSrv := httptest.NewServer(fake)
+	t.Cleanup(acpSrv.Close)
+	wsURL := "ws" + strings.TrimPrefix(acpSrv.URL, "http") + "/ws"
+
+	mgr := grokacp.NewManager(grokacp.Config{WSURL: wsURL, Secret: "t", AutoStart: false})
+	ts, _, _ := testServer(t, func(o *hub.Options) {
+		o.SeedDemo = false
+		o.ACP = mgr
+	})
+
+	// WS subscribe + send
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Bearer "+testToken)
+	wsURLHub := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURLHub, hdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, _, _ = conn.ReadMessage() // hello
+
+	buildID := "build:" + sid
+	_ = conn.WriteJSON(map[string]any{"type": "session.subscribe", "session_id": buildID})
+	_ = conn.WriteJSON(map[string]any{"type": "chat.send", "session_id": buildID, "content": "ping"})
+
+	deadline := time.Now().Add(5 * time.Second)
+	sawDelta := false
+	sawDone := false
+	for time.Now().Before(deadline) && !(sawDelta && sawDone) {
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		var ev map[string]any
+		if json.Unmarshal(data, &ev) != nil {
+			continue
+		}
+		switch ev["type"] {
+		case "assistant_delta":
+			if ev["delta"] == "live-ok" {
+				sawDelta = true
+			}
+		case "assistant_done":
+			sawDone = true
+		}
+	}
+	if !sawDelta || !sawDone {
+		t.Fatalf("sawDelta=%v sawDone=%v", sawDelta, sawDone)
+	}
+
+	// HTTP POST also accepted (not 403)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions/build%3A"+sid+"/messages",
+		strings.NewReader(`{"content":"via http"}`))
+	req.Header = authHeader()
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("POST messages: %d %s", res.StatusCode, body)
 	}
 }

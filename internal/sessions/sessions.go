@@ -87,7 +87,7 @@ type Session struct {
 	UpdatedAt float64   `json:"updated_at"`
 	Messages  []Message `json:"messages"`
 	Source    string    `json:"source,omitempty"`   // "bridge" | "build"
-	ReadOnly  bool      `json:"readonly,omitempty"` // true for on-disk Build sessions
+	ReadOnly  bool      `json:"readonly,omitempty"` // reserved; Build sessions are live via ACP
 }
 
 type SessionSummary struct {
