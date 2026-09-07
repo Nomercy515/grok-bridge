@@ -6,7 +6,8 @@ certs/
 .idea/
 .vscode/
 *.exe
-grok-bridge
+/grok-bridge
+/bin/
 data/sessions/
 data/auth.json
 data/restart.requested
