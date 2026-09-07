@@ -445,7 +445,8 @@
     if (t === "assistant_delta") {
       const follow = nearBottom();
       if (!streamingEl) streamingEl = appendMsg("assistant", "", true);
-      streamingEl.querySelector(".body").textContent += data.delta || "";
+      const body = streamingEl.querySelector(".body");
+      setMsgBody(body, (body.dataset.raw || "") + (data.delta || ""));
       if (follow) scrollFeed();
       else updateJumpBottom();
       return;
@@ -459,7 +460,7 @@
     if (t === "assistant_done") {
       if (streamingEl) {
         streamingEl.classList.remove("streaming");
-        if (data.content) streamingEl.querySelector(".body").textContent = data.content;
+        if (data.content) setMsgBody(streamingEl, data.content);
         if (data.cancelled || data.error === "cancelled") markCancelled(streamingEl);
         if (data.error && data.error !== "cancelled") {
           const note = document.createElement("div");
@@ -500,7 +501,9 @@
     const nodes = els.feed.querySelectorAll(".msg.user:not([data-id])");
     for (let i = 0; i < nodes.length; i++) {
       const el = nodes[i];
-      if ((el.querySelector(".body").textContent || "") === (content || "")) {
+      const body = el.querySelector(".body");
+      const raw = body && (body.dataset.raw != null ? body.dataset.raw : body.textContent);
+      if ((raw || "") === (content || "")) {
         if (messageId) el.dataset.id = messageId;
         return true;
       }
@@ -681,6 +684,45 @@
       .replace(/'/g, "&#39;");
   }
 
+  /** Complete **pairs** only → <strong>; unmatched ** stay literal. */
+  function formatBold(escaped) {
+    return String(escaped || "").replace(/\*\*([\s\S]+?)\*\*/g, "<strong>$1</strong>");
+  }
+
+  /**
+   * XSS-safe message HTML: escape first, then bold; wrap complete
+   * <system-reminder>…</system-reminder> blocks (case-insensitive) as asides.
+   */
+  function formatMessageHTML(raw) {
+    const s = String(raw == null ? "" : raw);
+    const parts = s.split(/<system-reminder>([\s\S]*?)<\/system-reminder>/gi);
+    let html = "";
+    for (let i = 0; i < parts.length; i++) {
+      const chunk = parts[i] == null ? "" : parts[i];
+      if (i % 2 === 1) {
+        html +=
+          '<aside class="sys-reminder" role="note">' +
+          '<div class="sys-reminder-label">System reminder</div>' +
+          '<div class="sys-reminder-body">' +
+          formatBold(escapeHtml(chunk)) +
+          "</div></aside>";
+      } else if (chunk) {
+        html += formatBold(escapeHtml(chunk));
+      }
+    }
+    return html;
+  }
+
+  /** Set .body from raw text via formatMessageHTML; keep data-raw for streaming. */
+  function setMsgBody(el, raw) {
+    if (!el) return;
+    const body = el.classList && el.classList.contains("body") ? el : el.querySelector(".body");
+    if (!body) return;
+    const text = raw == null ? "" : String(raw);
+    body.dataset.raw = text;
+    body.innerHTML = formatMessageHTML(text);
+  }
+
   function safeMsgRole(role) {
     const r = String(role || "");
     if (r === "user" || r === "assistant" || r === "system") return r;
@@ -705,7 +747,7 @@
     roleEl.textContent = roleLabel(safeRole);
     const bodyEl = document.createElement("div");
     bodyEl.className = "body";
-    bodyEl.textContent = content || "";
+    setMsgBody(bodyEl, content || "");
     div.appendChild(roleEl);
     div.appendChild(bodyEl);
     els.feed.appendChild(div);
@@ -815,7 +857,7 @@
       }
       if (m.role === "assistant" && streamingEl && !streamingEl.dataset.id) {
         streamingEl.classList.remove("streaming");
-        streamingEl.querySelector(".body").textContent = m.content || "";
+        setMsgBody(streamingEl, m.content || "");
         if (m.id) streamingEl.dataset.id = m.id;
         if (m.tools && m.tools.length) renderTools(streamingEl, m.tools);
         streamingEl = null;
