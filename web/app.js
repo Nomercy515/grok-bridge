@@ -497,13 +497,47 @@
     }
   }
 
+  /** Unwrap complete <user_query>…</user_query> (case-insensitive) to inner text. */
+  function unwrapUserQueryText(raw) {
+    const s = String(raw == null ? "" : raw);
+    const re = /<user_query>([\s\S]*?)<\/user_query>/gi;
+    let out = "";
+    let last = 0;
+    let found = false;
+    let m;
+    while ((m = re.exec(s)) !== null) {
+      found = true;
+      if (m.index > last) out += s.slice(last, m.index);
+      out += m[1];
+      last = m.index + m[0].length;
+    }
+    if (!found) return s;
+    if (last < s.length) out += s.slice(last);
+    return out;
+  }
+
+  /** Plain text for optimistic-user / merge dedupe.
+   *  When <user_query> is present, compare joined inners so wrapped server
+   *  content matches the optimistic plain bubble.
+   */
+  function normalizeUserContent(raw) {
+    const s = String(raw == null ? "" : raw);
+    const re = /<user_query>([\s\S]*?)<\/user_query>/gi;
+    const parts = [];
+    let m;
+    while ((m = re.exec(s)) !== null) parts.push(m[1]);
+    if (parts.length) return parts.join("\n").trim();
+    return s.trim();
+  }
+
   function adoptOptimisticUser(content, messageId) {
+    const want = normalizeUserContent(content);
     const nodes = els.feed.querySelectorAll(".msg.user:not([data-id])");
     for (let i = 0; i < nodes.length; i++) {
       const el = nodes[i];
       const body = el.querySelector(".body");
       const raw = body && (body.dataset.raw != null ? body.dataset.raw : body.textContent);
-      if ((raw || "") === (content || "")) {
+      if (normalizeUserContent(raw || "") === want) {
         if (messageId) el.dataset.id = messageId;
         return true;
       }
@@ -691,8 +725,9 @@
 
   /**
    * XSS-safe message HTML: escape first, then bold; wrap complete
-   * <system-reminder> and <user_query> blocks (case-insensitive) as asides.
-   * Lone/unclosed tags stay escaped literal text.
+   * <system-reminder> blocks (case-insensitive) as muted asides.
+   * Complete <user_query>…</user_query> is unwrapped into the normal
+   * message body (no labeled aside). Lone/unclosed tags stay escaped.
    */
   function formatTaggedAside(kind, inner) {
     const k = String(kind || "").toLowerCase();
@@ -705,21 +740,13 @@
         "</div></aside>"
       );
     }
-    if (k === "user-query" || k === "user_query") {
-      return (
-        '<aside class="user-query" role="note">' +
-        '<div class="user-query-label">User query</div>' +
-        '<div class="user-query-body">' +
-        formatBold(escapeHtml(inner)) +
-        "</div></aside>"
-      );
-    }
     return formatBold(escapeHtml(inner));
   }
 
   function formatMessageHTML(raw) {
-    const s = String(raw == null ? "" : raw);
-    const re = /<(system-reminder|user_query)>([\s\S]*?)<\/\1>/gi;
+    // Unwrap user_query into plain body text before formatting asides.
+    const s = unwrapUserQueryText(raw);
+    const re = /<(system-reminder)>([\s\S]*?)<\/\1>/gi;
     let html = "";
     let last = 0;
     let m;
