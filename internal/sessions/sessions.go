@@ -86,6 +86,8 @@ type Session struct {
 	CreatedAt float64   `json:"created_at"`
 	UpdatedAt float64   `json:"updated_at"`
 	Messages  []Message `json:"messages"`
+	Source    string    `json:"source,omitempty"`   // "bridge" | "build"
+	ReadOnly  bool      `json:"readonly,omitempty"` // true for on-disk Build sessions
 }
 
 type SessionSummary struct {
@@ -94,6 +96,7 @@ type SessionSummary struct {
 	CreatedAt    float64 `json:"created_at"`
 	UpdatedAt    float64 `json:"updated_at"`
 	MessageCount int     `json:"message_count"`
+	Source       string  `json:"source,omitempty"` // "bridge" | "build"
 }
 
 func (s *Store) ListSessions() []SessionSummary {

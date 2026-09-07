@@ -192,6 +192,10 @@
 
   function setTurnActive(on) {
     turnActive = !!on;
+    if (isBuildSession(activeId)) {
+      setComposerReadOnly(true);
+      return;
+    }
     if (els.btnCancel) els.btnCancel.disabled = !turnActive;
     if (els.btnSend) els.btnSend.disabled = !activeId || turnActive || sending;
   }
@@ -758,14 +762,55 @@
     return Math.floor(d / (86400 * 7)) + "w";
   }
 
+  function isBuildSession(sOrId) {
+    if (!sOrId) return false;
+    if (typeof sOrId === "string") return sOrId.indexOf("build:") === 0;
+    return sOrId.source === "build" || (sOrId.id && String(sOrId.id).indexOf("build:") === 0) || !!sOrId.readonly;
+  }
+
+  function setComposerReadOnly(on, hint) {
+    const ro = !!on;
+    if (els.input) {
+      els.input.disabled = ro;
+      els.input.placeholder = ro
+        ? (hint || "Build session (read-only)")
+        : "Message Grok…";
+    }
+    if (els.btnSend) els.btnSend.disabled = ro || !activeId || turnActive || sending;
+    if (els.btnCancel) els.btnCancel.disabled = ro || !turnActive;
+    let banner = document.getElementById("buildRoHint");
+    if (ro) {
+      if (!banner) {
+        banner = document.createElement("div");
+        banner.id = "buildRoHint";
+        banner.className = "build-ro-hint";
+        banner.setAttribute("role", "status");
+        const host = els.composer && els.composer.parentNode;
+        if (host) host.insertBefore(banner, els.composer);
+      }
+      banner.textContent = hint || "Grok Build session — view only (send/resume not wired in v1).";
+      banner.hidden = false;
+    } else if (banner) {
+      banner.hidden = true;
+    }
+  }
+
   function renderSessionList() {
     els.sessionList.innerHTML = "";
     sessions.forEach((s) => {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "session-item" + (s.id === activeId ? " active" : "");
-      btn.innerHTML = '<div class="t"></div><div class="m"></div>';
+      const build = isBuildSession(s);
+      btn.className = "session-item" + (s.id === activeId ? " active" : "") + (build ? " build" : "");
+      btn.innerHTML = '<div class="t-row"><div class="t"></div></div><div class="m"></div>';
       btn.querySelector(".t").textContent = s.title || "Untitled";
+      if (build) {
+        const badge = document.createElement("span");
+        badge.className = "src-badge build";
+        badge.textContent = "Build";
+        badge.title = "On-disk Grok Build session";
+        btn.querySelector(".t-row").appendChild(badge);
+      }
       const meta = btn.querySelector(".m");
       const count = (s.message_count || 0) + " msg";
       const rel = relativeTime(s.updated_at);
@@ -797,9 +842,13 @@
     els.chatTitle.textContent = sess.title || "Chat";
     renderTranscript(sess);
     subscribeSession(id);
-    els.btnSend.disabled = false;
-    setTurnActive(false);
-    try { history.replaceState(null, "", (DEMO ? "/?demo=1" : "/") + "#s=" + id); } catch (_) {}
+    const build = isBuildSession(sess) || isBuildSession(id);
+    setComposerReadOnly(build);
+    if (!build) {
+      els.btnSend.disabled = false;
+      setTurnActive(false);
+    }
+    try { history.replaceState(null, "", (DEMO ? "/?demo=1" : "/") + "#s=" + encodeURIComponent(id)); } catch (_) {}
   }
 
   async function newSession() {
@@ -814,6 +863,10 @@
 
   async function sendMessage(text) {
     if (!text || !activeId || sending || turnActive) return;
+    if (isBuildSession(activeId)) {
+      setComposerReadOnly(true);
+      return;
+    }
     sending = true;
     els.btnSend.disabled = true;
     setTurnActive(true);
@@ -951,7 +1004,8 @@
     await ensurePaired(false);
     connectWs();
     await refreshSessions();
-    const hash = (location.hash || "").replace(/^#s=/, "");
+    let hash = (location.hash || "").replace(/^#s=/, "");
+    try { hash = decodeURIComponent(hash); } catch (_) {}
     if (hash && sessions.some((s) => s.id === hash)) {
       await openSession(hash);
     } else if (sessions.length) {
