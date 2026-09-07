@@ -501,7 +501,15 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .msg.user .role { color: var(--muted); }
 .msg.assistant .role { color: var(--accent-dim); }
 .msg .body { color: var(--text); white-space: pre-wrap; }
-.msg .body strong { font-weight: 600; color: inherit; }
+.msg .body strong {
+  font-weight: 700;
+  font-size: 1.08em;
+  color: #fafafa;
+  letter-spacing: -0.01em;
+}
+.msg.user .body strong {
+  color: #ffffff;
+}
 .msg .body .sys-reminder {
   display: block;
   margin: 10px 0;
