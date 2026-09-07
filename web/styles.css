@@ -35,6 +35,7 @@
 html, body {
   height: 100%;
   margin: 0;
+  overflow: hidden;
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
@@ -53,6 +54,8 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   grid-template-columns: var(--rail-w) 1fr;
   height: 100%;
   max-height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
   background: var(--bg);
 }
 
@@ -312,7 +315,10 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   height: 100%;
+  overflow: hidden;
+  position: relative;
   background:
     radial-gradient(ellipse 80% 50% at 50% -20%, rgba(255,255,255,0.03), transparent 60%),
     var(--bg);
@@ -326,6 +332,9 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   background: rgba(5, 5, 5, 0.82);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
   z-index: 5;
 }
 .topbar-brand .wordmark {
@@ -439,7 +448,9 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 /* —— Feed —— */
 .feed {
   flex: 1;
+  min-height: 0;
   overflow: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 24px 20px 12px;
   display: flex;
   flex-direction: column;
@@ -701,7 +712,59 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 }
 
 /* —— Composer —— */
+.btn-jump-bottom {
+  position: absolute;
+  right: max(16px, env(safe-area-inset-right, 0px));
+  bottom: calc(92px + var(--safe-b));
+  z-index: 6;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(18, 18, 18, 0.92);
+  color: var(--text);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0;
+  line-height: 1;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+.btn-jump-bottom:not([hidden]) {
+  display: inline-flex;
+}
+.btn-jump-bottom:hover {
+  background: var(--bg-hover);
+  border-color: #3f3f46;
+}
+.btn-jump-bottom:active {
+  transform: translateY(1px);
+}
+.btn-jump-icon {
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1;
+}
+.btn-jump-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .composer-dock {
+  flex-shrink: 0;
   padding: 8px 16px calc(14px + var(--safe-b));
   max-width: calc(var(--stage-max) + 32px);
   width: 100%;
@@ -843,7 +906,18 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 }
 
 @media (max-width: 800px) {
-  .app { grid-template-columns: 1fr; }
+  .app {
+    grid-template-columns: 1fr;
+    height: 100%;
+    max-height: 100dvh;
+    overflow: hidden;
+  }
+  .stage {
+    height: 100%;
+    max-height: 100dvh;
+    overflow: hidden;
+    min-height: 0;
+  }
   .rail {
     position: fixed;
     inset: 0 auto 0 0;
@@ -855,13 +929,32 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   }
   .rail.open { transform: translateX(0); }
   .icon-btn { display: inline-grid; }
+  .topbar {
+    flex-shrink: 0;
+    position: sticky;
+    top: 0;
+  }
   .topbar-brand { display: none; }
   .backdrop:not([hidden]) { display: block; }
-  .feed { padding: 16px 12px 8px; }
+  .feed {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 16px 12px 8px;
+  }
   .msg { max-width: 100%; }
   .tool-card header { padding: 8px 10px; }
   .tool-card pre { max-height: 160px; font-size: 0.72rem; }
-  .composer-dock { max-width: 100%; padding-left: 12px; padding-right: 12px; }
+  .btn-jump-bottom {
+    right: max(12px, env(safe-area-inset-right, 0px));
+    bottom: calc(76px + var(--safe-b));
+  }
+  .composer-dock {
+    flex-shrink: 0;
+    max-width: 100%;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
   .composer-hint { display: none; }
 }
 
