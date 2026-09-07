@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Grok Bridge">
+  <title>Grok Bridge</title>
+  <desc>Editable vector master. Named ids: background, bot-circle, bridge-fill, bridge-body, arch geometry in path.</desc>
+
+  <defs>
+    <linearGradient id="bridge-fill" x1="146" y1="0" x2="873" y2="0" gradientUnits="userSpaceOnUse">
+      <stop id="bridge-fill-start" offset="0%" stop-color="#FFFFFF"/>
+      <stop id="bridge-fill-end" offset="100%" stop-color="#D4A030"/>
+    </linearGradient>
+  </defs>
+
+  <rect id="background" width="1024" height="1024" fill="#000000"/>
+
+  <circle id="bot-circle" cx="512" cy="512" r="468" fill="none" stroke="#FFFFFF" stroke-width="8"/>
+
+  <g id="bridge">
+    <!-- Ellipse arc top (A), vertical sides, bottom with two upward semicircle arches -->
+    <path id="bridge-body" fill="url(#bridge-fill)" d="
+      M 146 467
+      L 146 298
+      A 363.5000 57.0000 0 0 1 873 298
+      L 873 467
+      L 726.3000 467
+      A 67.8000 67.8000 0 0 0 590.7000 467
+      L 428.8000 467
+      A 67.8000 67.8000 0 0 0 293.2000 467
+      Z"/>
+  </g>
+</svg>

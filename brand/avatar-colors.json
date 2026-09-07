@@ -1,0 +1,46 @@
+[
+  {
+    "id": "black",
+    "value": "#000000"
+  },
+  {
+    "id": "brown",
+    "value": "#936439"
+  },
+  {
+    "id": "red",
+    "value": "#FF263C"
+  },
+  {
+    "id": "orange",
+    "value": "#FF6700"
+  },
+  {
+    "id": "yellow",
+    "value": "#FF9800"
+  },
+  {
+    "id": "green",
+    "value": "#00C972"
+  },
+  {
+    "id": "cyan",
+    "value": "#00BCA6"
+  },
+  {
+    "id": "blue",
+    "value": "#1084FE"
+  },
+  {
+    "id": "violet",
+    "value": "#9159FE"
+  },
+  {
+    "id": "magenta",
+    "value": "#FF309B"
+  },
+  {
+    "id": "gray",
+    "value": "#777777"
+  }
+]

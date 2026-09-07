@@ -1,0 +1,26 @@
+# Grok Bridge systemd unit template
+# Installed by scripts/install.sh as /etc/systemd/system/grok-bridge.service
+#
+# Phone URL of record = Tailscale MagicDNS (or 100.x) — never host LAN DHCP.
+# Do not port-forward :4020 to the public internet.
+
+[Unit]
+Description=Grok Bridge hub (supervised)
+Documentation=file://__ROOT__/README.md
+After=network-online.target tailscaled.service grok-bridge-endpoint.service
+Wants=network-online.target grok-bridge-endpoint.service
+Requires=tailscaled.service
+
+[Service]
+Type=simple
+WorkingDirectory=__ROOT__
+EnvironmentFile=-__ENV_FILE__
+EnvironmentFile=-__DATA__/grok-bridge.endpoint.env
+Environment=GROK_BRIDGE_DATA=__DATA__
+ExecStart=__ROOT__/scripts/supervise.sh
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

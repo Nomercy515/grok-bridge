@@ -1,0 +1,24 @@
+# Oneshot: wait for Tailscale, write data/endpoint.json, regen TLS SANs.
+# Installed by scripts/install.sh as grok-bridge-endpoint.service
+# Runs before grok-bridge.service so certs/URL match MagicDNS after every reboot.
+
+[Unit]
+Description=Grok Bridge Tailscale endpoint refresh
+Documentation=file://__ROOT__/README.md
+After=network-online.target tailscaled.service
+Wants=network-online.target
+Requires=tailscaled.service
+Before=grok-bridge.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=__ROOT__
+EnvironmentFile=-__ENV_FILE__
+Environment=GROK_BRIDGE_DATA=__DATA__
+Environment=GROK_BRIDGE_PORT=__PORT__
+ExecStart=__ROOT__/scripts/refresh-endpoint.sh --wait-secs 180
+TimeoutStartSec=240
+
+[Install]
+WantedBy=multi-user.target
