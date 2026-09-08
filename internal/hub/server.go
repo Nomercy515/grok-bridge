@@ -383,7 +383,7 @@ func (s *Server) handleRotatePairing(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, 200, map[string]any{"sessions": s.listMergedSessions()})
+		writeJSON(w, 200, map[string]any{"sessions": s.listMergedSessions(r)})
 	case http.MethodPost:
 		body := readJSON(r)
 		title, _ := body["title"].(string)
@@ -405,14 +405,18 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) listMergedSessions() []sessions.SessionSummary {
+func (s *Server) listMergedSessions(r *http.Request) []sessions.SessionSummary {
 	bridge := s.Hub.Store.ListSessions()
 	out := make([]sessions.SessionSummary, 0, len(bridge)+8)
 	for _, sum := range bridge {
 		sum.Source = "bridge"
 		out = append(out, sum)
 	}
-	out = append(out, buildsessions.List()...)
+	includeGrokOnly := false
+	if r != nil {
+		includeGrokOnly = buildsessions.QueryIncludesGrokOnly(r.URL.Query().Get("include"))
+	}
+	out = append(out, buildsessions.ListIncluding(includeGrokOnly)...)
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})
