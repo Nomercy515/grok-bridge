@@ -30,9 +30,11 @@
     ctxMeter: $("ctxMeter"),
     ctxSub: $("ctxSub"),
     modeBadge: $("modeBadge"),
-    demoLink: $("demoLink"),
+    btnSettings: $("btnSettings"),
+    settingsModal: $("settingsModal"),
+    demoToggle: $("demoToggle"),
     btnRestart: $("btnRestart"),
-    btnGrokOnly: $("btnGrokOnly"),
+    grokOnlyToggle: $("grokOnlyToggle"),
     btnJumpBottom: $("btnJumpBottom"),
   };
 
@@ -51,9 +53,13 @@
   let turnActive = false;
 
   if (DEMO) {
-    els.modeBadge.textContent = "Demo mode";
-    els.modeBadge.classList.add("demo");
     document.title = "Grok Bridge (demo)";
+  }
+
+  function setSessionOwner(name) {
+    const label = String(name || "").trim();
+    if (!els.modeBadge) return;
+    els.modeBadge.textContent = label ? label + "'s sessions list" : "Sessions";
   }
 
   /** Allowlist endpoint URLs before setting href (XSS-safe). */
@@ -949,9 +955,15 @@
   }
 
   function syncGrokOnlyToggle() {
-    if (!els.btnGrokOnly) return;
-    els.btnGrokOnly.textContent = includeGrokOnly ? "Hide Grok-only" : "Show Grok-only";
-    els.btnGrokOnly.setAttribute("aria-pressed", includeGrokOnly ? "true" : "false");
+    if (!els.grokOnlyToggle) return;
+    els.grokOnlyToggle.checked = includeGrokOnly;
+  }
+
+  function setSettingsOpen(open) {
+    if (!els.settingsModal || !els.btnSettings) return;
+    els.settingsModal.hidden = !open;
+    els.btnSettings.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open && els.demoToggle) els.demoToggle.checked = DEMO;
   }
 
   async function refreshSessions() {
@@ -1310,18 +1322,51 @@
     }
   });
 
-  if (els.btnGrokOnly) {
+  if (els.grokOnlyToggle) {
     syncGrokOnlyToggle();
-    els.btnGrokOnly.addEventListener("click", () => {
-      includeGrokOnly = !includeGrokOnly;
+    els.grokOnlyToggle.addEventListener("change", () => {
+      includeGrokOnly = els.grokOnlyToggle.checked;
       localStorage.setItem(GROK_ONLY_KEY, includeGrokOnly ? "1" : "0");
       refreshSessions().catch(() => {});
     });
   }
 
+  if (els.demoToggle) {
+    els.demoToggle.checked = DEMO;
+    els.demoToggle.addEventListener("change", () => {
+      const u = new URL(location.href);
+      if (els.demoToggle.checked) u.searchParams.set("demo", "1");
+      else u.searchParams.delete("demo");
+      location.href = u.pathname + u.search + u.hash;
+    });
+  }
+
+  if (els.btnSettings && els.settingsModal) {
+    els.btnSettings.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setSettingsOpen(els.settingsModal.hidden);
+    });
+    els.settingsModal.addEventListener("click", (e) => e.stopPropagation());
+    document.addEventListener("click", () => setSettingsOpen(false));
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") setSettingsOpen(false);
+    });
+  }
+
+  async function loadSessionOwner() {
+    try {
+      const st = await fetch("/api/auth/status").then((r) => r.json());
+      if (st && st.user_name) setSessionOwner(st.user_name);
+      else setSessionOwner("");
+    } catch (_) {
+      setSessionOwner("");
+    }
+  }
+
   async function boot() {
     showInsecureBanner();
     await showEndpointBanner();
+    await loadSessionOwner();
     await ensurePaired(false);
     connectWs();
     await refreshSessions();
