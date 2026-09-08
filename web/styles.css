@@ -26,6 +26,11 @@
   --font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --safe-b: env(safe-area-inset-bottom, 0px);
+  /* Prefer small viewport on mobile so URL bar / home indicator don't clip the composer.
+     JS may override with a pixel --app-height from visualViewport (keyboard / chrome). */
+  --app-height: 100vh;
+  --app-height: 100dvh;
+  --app-height: 100svh;
   --rail-w: 272px;
   --stage-max: 760px;
   --focus-ring: 0 0 0 2px #050505, 0 0 0 4px rgba(228, 228, 231, 0.45);
@@ -34,6 +39,7 @@
 * { box-sizing: border-box; }
 html, body {
   height: 100%;
+  max-height: var(--app-height);
   margin: 0;
   overflow: hidden;
   background: var(--bg);
@@ -52,8 +58,8 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .app {
   display: grid;
   grid-template-columns: var(--rail-w) 1fr;
-  height: 100%;
-  max-height: 100dvh;
+  height: var(--app-height);
+  max-height: var(--app-height);
   min-height: 0;
   overflow: hidden;
   background: var(--bg);
@@ -829,6 +835,7 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   max-width: calc(var(--stage-max) + 32px);
   width: 100%;
   margin: 0 auto;
+  /* Keep dock inside the clipped .app box (never rely on page scroll). */
 }
 .composer {
   display: flex;
@@ -968,13 +975,13 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 @media (max-width: 800px) {
   .app {
     grid-template-columns: 1fr;
-    height: 100%;
-    max-height: 100dvh;
+    height: var(--app-height);
+    max-height: var(--app-height);
     overflow: hidden;
   }
   .stage {
     height: 100%;
-    max-height: 100dvh;
+    max-height: 100%;
     overflow: hidden;
     min-height: 0;
   }
@@ -1005,15 +1012,18 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   .msg { max-width: 100%; }
   .tool-card header { padding: 8px 10px; }
   .tool-card pre { max-height: 160px; font-size: 0.72rem; }
+  /* Dock taller on mobile (extra safe-area pad); keep FAB above it. */
   .btn-jump-bottom {
     right: max(12px, env(safe-area-inset-right, 0px));
-    bottom: calc(76px + var(--safe-b));
+    bottom: calc(96px + max(12px, var(--safe-b)) + 8px);
   }
   .composer-dock {
     flex-shrink: 0;
     max-width: 100%;
     padding-left: 12px;
     padding-right: 12px;
+    /* Full composer visible above home indicator — no page scroll. */
+    padding-bottom: calc(max(12px, var(--safe-b)) + 14px);
   }
   .composer-hint { display: none; }
 }
