@@ -62,6 +62,10 @@ info "Found $GO_VER"
 
 # shellcheck disable=SC1091
 source "$ROOT/scripts/ensure-grok-build.sh"
+# Warn-only on purpose: do not default REQUIRE_GROK_BUILD=1 here.
+# Existing Linux VM installs must keep succeeding when grok is not installed yet.
+# macOS scripts/install-macos.sh and Windows scripts/install.ps1 default require on
+# (source-host setup). Pass REQUIRE_GROK_BUILD=1 to fail this script hard.
 ensure_grok_build
 
 info "Building grok-bridge binary"
