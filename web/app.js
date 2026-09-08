@@ -10,6 +10,7 @@
   const params = new URLSearchParams(location.search);
   const DEMO = params.get("demo") === "1";
   const TOKEN_KEY = "grok_bridge_token";
+  const GROK_ONLY_KEY = "grok_bridge_include_grok_only";
   const RECONNECT_BASE_MS = 1500;
   const RECONNECT_MAX_HIDDEN_MS = 30000;
   const POLL_MS = 4000;
@@ -31,11 +32,13 @@
     modeBadge: $("modeBadge"),
     demoLink: $("demoLink"),
     btnRestart: $("btnRestart"),
+    btnGrokOnly: $("btnGrokOnly"),
     btnJumpBottom: $("btnJumpBottom"),
   };
 
   let token = localStorage.getItem(TOKEN_KEY) || "";
   let sessions = [];
+  let includeGrokOnly = localStorage.getItem(GROK_ONLY_KEY) === "1";
   let activeId = null;
   let ws = null;
   let streamingEl = null;
@@ -945,10 +948,18 @@
     }
   }
 
+  function syncGrokOnlyToggle() {
+    if (!els.btnGrokOnly) return;
+    els.btnGrokOnly.textContent = includeGrokOnly ? "Hide Grok-only" : "Show Grok-only";
+    els.btnGrokOnly.setAttribute("aria-pressed", includeGrokOnly ? "true" : "false");
+  }
+
   async function refreshSessions() {
-    const res = await api("/api/sessions");
+    const q = includeGrokOnly ? "?include=grok-only" : "";
+    const res = await api("/api/sessions" + q);
     const data = await res.json();
     sessions = data.sessions || [];
+    syncGrokOnlyToggle();
     renderSessionList();
   }
 
@@ -1031,6 +1042,13 @@
         badge.className = "src-badge build";
         badge.textContent = "Build";
         badge.title = "Grok Build session";
+        btn.querySelector(".t-row").appendChild(badge);
+      }
+      if (s.grok_only) {
+        const badge = document.createElement("span");
+        badge.className = "src-badge grok-only";
+        badge.textContent = "Grok only";
+        badge.title = "No human turn — agent-to-agent prompt";
         btn.querySelector(".t-row").appendChild(badge);
       }
       const meta = btn.querySelector(".m");
@@ -1291,6 +1309,15 @@
       forceReconnectAndCatchUp();
     }
   });
+
+  if (els.btnGrokOnly) {
+    syncGrokOnlyToggle();
+    els.btnGrokOnly.addEventListener("click", () => {
+      includeGrokOnly = !includeGrokOnly;
+      localStorage.setItem(GROK_ONLY_KEY, includeGrokOnly ? "1" : "0");
+      refreshSessions().catch(() => {});
+    });
+  }
 
   async function boot() {
     showInsecureBanner();

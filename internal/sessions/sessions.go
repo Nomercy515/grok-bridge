@@ -101,6 +101,9 @@ type SessionSummary struct {
 	UpdatedAt    float64 `json:"updated_at"`
 	MessageCount int     `json:"message_count"`
 	Source       string  `json:"source,omitempty"` // "bridge" | "build"
+	// GrokOnly marks a Build session with no human turn (subagent / agent-only).
+	// Omitted from the default list; set when ?include=grok-only is requested.
+	GrokOnly bool `json:"grok_only,omitempty"`
 }
 
 func (s *Store) ListSessions() []SessionSummary {
