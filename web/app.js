@@ -1214,6 +1214,35 @@
     els.btnRestart.onclick = () => restartHub();
   }
 
+  /** Pin .app to the visible viewport on phone (URL bar / keyboard). Desktop keeps CSS svh/dvh. */
+  function isNarrowViewport() {
+    return window.matchMedia("(max-width: 800px)").matches;
+  }
+
+  function syncAppHeight() {
+    const root = document.documentElement;
+    if (!isNarrowViewport()) {
+      root.style.removeProperty("--app-height");
+      return;
+    }
+    const vv = window.visualViewport;
+    const h = vv && vv.height > 0 ? vv.height : window.innerHeight;
+    if (!(h > 0)) return;
+    root.style.setProperty("--app-height", Math.round(h) + "px");
+  }
+
+  function installViewportSync() {
+    const run = () => syncAppHeight();
+    run();
+    window.addEventListener("resize", run);
+    window.addEventListener("orientationchange", run);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", run);
+      window.visualViewport.addEventListener("scroll", run);
+    }
+  }
+  installViewportSync();
+
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
       reconnectDelay = RECONNECT_BASE_MS;
