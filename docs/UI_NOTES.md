@@ -31,7 +31,7 @@ Product chrome for the hub web client.
 Phone chrome (URL bar, home indicator) and soft keyboard can make `100dvh` / `height: 100%` taller than the *visible* area, which clipped the bottom composer inside `.app { overflow: hidden }`.
 
 - `html` / `body` / `.app` size to `--app-height` (CSS: `100svh` with `100dvh` / `100vh` fallbacks).
-- On narrow viewports, `web/app.js` sets `--app-height` from `visualViewport.height` (or `innerHeight`) on resize/orientation so the dock stays in view when the keyboard opens; desktop clears the override.
+- On narrow viewports, `web/app.js` sets `--app-height` / `--app-top` from `visualViewport` (height + offsetTop), pins `#app` with `position: fixed` via `body.vv-pinned`, and re-syncs on input focus (Android reports vv late); desktop clears the pin. When the keyboard is open (`vv-keyboard`), composer-dock uses a smaller bottom pad instead of stacking safe-area under the keys.
 - Layout stays sticky: `.topbar` + `.composer-dock` are `flex-shrink: 0`; only `#feed` scrolls (`min-height: 0; overflow: auto`).
 - Mobile `.composer-dock` `padding-bottom` is at least `max(12px, env(safe-area-inset-bottom)) + 14px`. Jump-to-bottom FAB `bottom` offset tracks the taller dock.
 
