@@ -217,6 +217,20 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   background: var(--bg-soft);
   color: var(--text);
 }
+.session-item .unread-dot {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3b82f6;
+  box-shadow: 0 0 0 2px var(--bg-elev);
+  pointer-events: none;
+}
+.session-item.unread {
+  padding-right: 22px;
+}
 .session-item.active::before {
   content: "";
   position: absolute;

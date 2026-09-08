@@ -11,6 +11,7 @@
   const DEMO = params.get("demo") === "1";
   const TOKEN_KEY = "grok_bridge_token";
   const GROK_ONLY_KEY = "grok_bridge_include_grok_only";
+  const LIVE_MS = 4000;
   const RECONNECT_BASE_MS = 1500;
   const RECONNECT_MAX_HIDDEN_MS = 30000;
   const POLL_MS = 4000;
@@ -51,6 +52,11 @@
   let catchingUp = false;
   let sending = false;
   let turnActive = false;
+  let liveTimer = null;
+  let countsPrimed = false;
+  const unreadIds = new Set();
+  const seenCounts = Object.create(null);
+  const selfSendAt = Object.create(null);
 
   if (DEMO) {
     document.title = "Grok Bridge (demo)";
@@ -433,10 +439,18 @@
       if (data.session_id === activeId && data.session) {
         if (els.feed.querySelector(".msg")) mergeTranscript(data.session);
         else renderTranscript(data.session);
+        updateCtxMeter(data.session);
+        if (isLooking(activeId)) clearUnread(activeId);
       }
       return;
     }
-    if (data.session_id && activeId && data.session_id !== activeId) return;
+    if (data.session_id && activeId && data.session_id !== activeId) {
+      if (t === "assistant_start" || t === "assistant_delta" || t === "assistant_done") {
+        markUnread(data.session_id);
+        refreshSessions().catch(() => {});
+      }
+      return;
+    }
 
     if (t === "user_message") {
       const mid = data.message_id;
@@ -490,7 +504,10 @@
       streamingEl = null;
       streamingTools = null;
       setTurnActive(false);
-      refreshSessions();
+      if (isLooking(activeId)) clearUnread(activeId);
+      else if (activeId) markUnread(activeId);
+      refreshSessions().catch(() => {});
+      catchUp();
       return;
     }
     if (t === "error") {
@@ -831,6 +848,10 @@
   }
 
   function updateJumpBottom() {
+    if (activeId && nearBottom() && !document.hidden && unreadIds.has(activeId)) {
+      clearUnread(activeId);
+      renderSessionList();
+    }
     const btn = els.btnJumpBottom;
     if (!btn) return;
     const hasMsgs = !!els.feed.querySelector(".msg");
@@ -966,11 +987,50 @@
     if (open && els.demoToggle) els.demoToggle.checked = DEMO;
   }
 
+  function isLooking(id) {
+    return !!(id && id === activeId && !document.hidden && nearBottom());
+  }
+
+  function markUnread(id) {
+    if (!id || isLooking(id)) return;
+    unreadIds.add(id);
+  }
+
+  function clearUnread(id) {
+    if (!id) return;
+    unreadIds.delete(id);
+  }
+
+  function noteSessionCounts(list) {
+    list.forEach((s) => {
+      const next = s.message_count || 0;
+      const prev = seenCounts[s.id];
+      if (countsPrimed && prev != null && next > prev) {
+        const recentSelf = selfSendAt[s.id] && (Date.now() - selfSendAt[s.id] < 8000) && next === prev + 1;
+        if (isLooking(s.id)) clearUnread(s.id);
+        else if (!recentSelf) markUnread(s.id);
+      }
+      seenCounts[s.id] = next;
+    });
+    countsPrimed = true;
+  }
+
+  function startLiveRefresh() {
+    if (liveTimer) return;
+    liveTimer = setInterval(() => {
+      if (!token) return;
+      refreshSessions()
+        .then(() => { if (activeId) return catchUp(); })
+        .catch(() => {});
+    }, LIVE_MS);
+  }
+
   async function refreshSessions() {
     const q = includeGrokOnly ? "?include=grok-only" : "";
     const res = await api("/api/sessions" + q);
     const data = await res.json();
     sessions = data.sessions || [];
+    noteSessionCounts(sessions);
     syncGrokOnlyToggle();
     renderSessionList();
   }
@@ -1046,8 +1106,16 @@
       const btn = document.createElement("button");
       btn.type = "button";
       const build = isBuildSession(s);
-      btn.className = "session-item" + (s.id === activeId ? " active" : "") + (build ? " build" : "");
+      const unread = unreadIds.has(s.id);
+      btn.className = "session-item" + (s.id === activeId ? " active" : "") + (build ? " build" : "") + (unread ? " unread" : "");
+      if (unread) btn.setAttribute("aria-label", (s.title || "Untitled") + ", unread");
       btn.innerHTML = '<div class="t-row"><div class="t"></div></div><div class="m"></div>';
+      if (unread) {
+        const dot = document.createElement("span");
+        dot.className = "unread-dot";
+        dot.setAttribute("aria-hidden", "true");
+        btn.appendChild(dot);
+      }
       btn.querySelector(".t").textContent = s.title || "Untitled";
       if (build) {
         const badge = document.createElement("span");
@@ -1086,6 +1154,7 @@
 
   async function openSession(id) {
     activeId = id;
+    clearUnread(id);
     renderSessionList();
     closeMenu();
     const res = await api("/api/sessions/" + encodeURIComponent(id));
@@ -1117,6 +1186,7 @@
   async function sendMessage(text) {
     if (!text || !activeId || sending || turnActive) return;
     sending = true;
+    selfSendAt[activeId] = Date.now();
     els.btnSend.disabled = true;
     setTurnActive(true);
     try {
@@ -1370,6 +1440,7 @@
     await ensurePaired(false);
     connectWs();
     await refreshSessions();
+    startLiveRefresh();
     let hash = (location.hash || "").replace(/^#s=/, "");
     try { hash = decodeURIComponent(hash); } catch (_) {}
     if (hash && sessions.some((s) => s.id === hash)) {
