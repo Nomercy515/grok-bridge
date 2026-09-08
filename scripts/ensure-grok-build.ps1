@@ -47,16 +47,24 @@ function Resolve-GrokHome {
 
 function Find-GrokBin {
     if (-not [string]::IsNullOrWhiteSpace($env:GROK_BRIDGE_GROK_BIN)) {
-        if (Test-Path -LiteralPath $env:GROK_BRIDGE_GROK_BIN) {
-            return $env:GROK_BRIDGE_GROK_BIN
+        $explicit = $env:GROK_BRIDGE_GROK_BIN
+        # Leaf/file only — a directory path must not count as the grok binary.
+        if (Test-Path -LiteralPath $explicit -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $explicit).Path
         }
-        Write-GbWarn "GROK_BRIDGE_GROK_BIN=$($env:GROK_BRIDGE_GROK_BIN) not found"
+        Write-GbWarn "GROK_BRIDGE_GROK_BIN=$explicit is not a file"
         return $null
     }
-    $cmd = Get-Command grok -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-    $cmd = Get-Command grok.exe -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
+    foreach ($name in @('grok', 'grok.exe')) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.CommandType -eq 'Application' -and
+                $_.Source -and
+                (Test-Path -LiteralPath $_.Source -PathType Leaf)
+            } |
+            Select-Object -First 1
+        if ($cmd) { return $cmd.Source }
+    }
     return $null
 }
 
@@ -115,7 +123,11 @@ function Ensure-GrokBuild {
     Show-AgentReminder
 }
 
-# When executed directly:
-if ($MyInvocation.InvocationName -ne '.' -and $MyInvocation.Line -notmatch '^\s*\.') {
+# When executed directly (not dot-sourced).
+# InvocationName '.' is the classic `. .\file.ps1` signal on Windows PowerShell
+# and PowerShell 7. Some hosts only record the dot operator on Line. `& .\file.ps1`
+# is a call, not a dot-source, and must still run Ensure-GrokBuild.
+$scriptDotSourced = ($MyInvocation.InvocationName -eq '.') -or ($MyInvocation.Line -match '^\s*\.(?=\s|$)')
+if (-not $scriptDotSourced) {
     Ensure-GrokBuild
 }

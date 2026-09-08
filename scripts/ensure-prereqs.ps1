@@ -147,6 +147,10 @@ function Ensure-Prereqs {
     Ensure-Go
 }
 
-if ($MyInvocation.InvocationName -ne '.' -and $MyInvocation.Line -notmatch '^\s*\.') {
+# When executed directly (not dot-sourced). See ensure-grok-build.ps1 for the same check.
+# `. .\file.ps1` sets InvocationName to '.' (or a Line that starts with the dot operator).
+# `& .\file.ps1` is execution, not dot-source.
+$scriptDotSourced = ($MyInvocation.InvocationName -eq '.') -or ($MyInvocation.Line -match '^\s*\.(?=\s|$)')
+if (-not $scriptDotSourced) {
     Ensure-Prereqs
 }

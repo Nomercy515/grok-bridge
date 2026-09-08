@@ -36,9 +36,11 @@ if (-not $needBuild) {
 }
 
 if ($needBuild) {
-    Write-Host '==> Building grok-bridge.exe (GOOS=windows)'
-    $env:GOOS = 'windows'
-    # Keep native arch; clear GOARCH only if cross-compiling was forced elsewhere.
+    # Native Windows: do not force GOOS/GOARCH. Go defaults to the host OS/arch.
+    # A pre-set GOOS/GOARCH in this session is left unchanged (so a leftover
+    # cross-compile setting is not cleared or rewritten) and will affect
+    # `go build` — unset them in this shell first if you need a native exe.
+    Write-Host '==> Building grok-bridge.exe'
     & go build -o $exe ./cmd/grok-bridge
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
