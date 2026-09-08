@@ -27,6 +27,7 @@
     btnNew: $("btnNew"),
     btnMenu: $("btnMenu"),
     ctxMeter: $("ctxMeter"),
+    ctxSub: $("ctxSub"),
     modeBadge: $("modeBadge"),
     demoLink: $("demoLink"),
     btnRestart: $("btnRestart"),
@@ -989,6 +990,7 @@
         banner = document.createElement("div");
         banner.id = "buildRoHint";
         banner.className = "build-ro-hint";
+        banner.dataset.lockOnly = "1";
         banner.setAttribute("role", "status");
         const host = els.composer && els.composer.parentNode;
         if (host) host.insertBefore(banner, els.composer);
@@ -1001,22 +1003,17 @@
   }
 
   function setBuildSessionChrome(on) {
-    let banner = document.getElementById("buildRoHint");
-    if (on) {
-      if (!banner) {
-        banner = document.createElement("div");
-        banner.id = "buildRoHint";
-        banner.className = "build-ro-hint";
-        banner.setAttribute("role", "status");
-        const host = els.composer && els.composer.parentNode;
-        if (host) host.insertBefore(banner, els.composer);
-      }
-      banner.textContent = "via Grok Build (ACP)";
-      banner.hidden = false;
-      if (els.input) els.input.placeholder = "Message Grok Build…";
-    } else if (banner) {
-      banner.hidden = true;
-      if (els.input) els.input.placeholder = "Message Grok…";
+    if (els.ctxSub) {
+      els.ctxSub.hidden = !on;
+      els.ctxSub.textContent = on ? "via Grok Build" : "";
+    }
+    // Remove legacy composer banner if present
+    const banner = document.getElementById("buildRoHint");
+    if (banner && !banner.dataset.lockOnly) {
+      banner.remove();
+    }
+    if (els.input) {
+      els.input.placeholder = on ? "Message Grok Build…" : "Message Grok…";
     }
   }
 
@@ -1033,7 +1030,7 @@
         const badge = document.createElement("span");
         badge.className = "src-badge build";
         badge.textContent = "Build";
-        badge.title = "Grok Build session (live via ACP)";
+        badge.title = "Grok Build session";
         btn.querySelector(".t-row").appendChild(badge);
       }
       const meta = btn.querySelector(".m");
