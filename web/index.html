@@ -22,15 +22,35 @@
         </span>
         <div class="brand-copy">
           <div class="brand-title">Grok Bridge</div>
-          <div class="brand-sub" id="modeBadge">LAN cockpit</div>
+          <div class="brand-sub" id="modeBadge"></div>
         </div>
       </div>
       <button type="button" class="btn primary" id="btnNew">New session</button>
       <nav class="session-list" id="sessionList" aria-label="Session list"></nav>
       <div class="sidebar-foot">
-        <a href="/?demo=1" id="demoLink">Demo mode</a>
-        <button type="button" class="btn ghost" id="btnGrokOnly" title="Show agent-to-agent sessions with no human turn">Show Grok-only</button>
-        <button type="button" class="btn ghost" id="btnRestart" title="Restart hub process (paired)">Restart hub</button>
+        <button type="button" class="rail-cog" id="btnSettings" aria-label="Session options" aria-haspopup="dialog" aria-expanded="false" aria-controls="settingsModal">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+            <path d="M7.4 2.2h3.2l.35 1.55a5.2 5.2 0 0 1 1.15.48l1.45-.7 1.6 2.77-1.1 1.15c.1.38.16.77.16 1.18s-.06.8-.16 1.18l1.1 1.15-1.6 2.77-1.45-.7a5.2 5.2 0 0 1-1.15.48L10.6 15.8H7.4l-.35-1.55a5.2 5.2 0 0 1-1.15-.48l-1.45.7-1.6-2.77 1.1-1.15A5.1 5.1 0 0 1 3.8 9c0-.41.06-.8.16-1.18l-1.1-1.15 1.6-2.77 1.45.7a5.2 5.2 0 0 1 1.15-.48L7.4 2.2Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+            <circle cx="9" cy="9" r="2.1" stroke="currentColor" stroke-width="1.3"/>
+          </svg>
+        </button>
+      </div>
+      <div class="settings-modal" id="settingsModal" hidden role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+        <div class="settings-card">
+          <h2 class="settings-title" id="settingsTitle">Options</h2>
+          <label class="opt-row" for="demoToggle">
+            <span>Enable Demo mode</span>
+            <span class="switch">
+              <input type="checkbox" id="demoToggle" role="switch" />
+              <span class="switch-ui" aria-hidden="true"></span>
+            </span>
+          </label>
+          <label class="opt-row" for="grokOnlyToggle">
+            <span>Include Grok Only subagent sessions</span>
+            <input type="checkbox" id="grokOnlyToggle" />
+          </label>
+          <button type="button" class="btn restart-hub" id="btnRestart">Restart Bridge hub</button>
+        </div>
       </div>
     </aside>
 

@@ -323,6 +323,9 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/auth/status", func(w http.ResponseWriter, r *http.Request) {
 		body := s.Hub.Auth.Status()
 		body["endpoint"] = endpoint.PublicView(s.Hub.Store.Root)
+		if name := HostUserLabel(); name != "" {
+			body["user_name"] = name
+		}
 		writeJSON(w, 200, body)
 	})
 	s.Mux.HandleFunc("/api/auth/pair", s.handlePair)
