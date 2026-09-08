@@ -1218,24 +1218,56 @@
 
   function syncAppHeight() {
     const root = document.documentElement;
+    const body = document.body;
     if (!isNarrowViewport()) {
       root.style.removeProperty("--app-height");
+      root.style.removeProperty("--app-top");
+      body.classList.remove("vv-pinned", "vv-keyboard");
       return;
     }
     const vv = window.visualViewport;
     const h = vv && vv.height > 0 ? vv.height : window.innerHeight;
+    const top = vv && Number.isFinite(vv.offsetTop) ? vv.offsetTop : 0;
     if (!(h > 0)) return;
     root.style.setProperty("--app-height", Math.round(h) + "px");
+    root.style.setProperty("--app-top", Math.round(top) + "px");
+    body.classList.add("vv-pinned");
+    // Soft keyboard: visual viewport much shorter than layout viewport.
+    const keyboardLikely = h < window.innerHeight * 0.75;
+    body.classList.toggle("vv-keyboard", keyboardLikely);
+  }
+
+  /** Android Chrome often updates visualViewport late during keyboard animation. */
+  function scheduleViewportSync(opts) {
+    const scrollComposer = !!(opts && opts.scrollComposer);
+    const run = () => {
+      syncAppHeight();
+      if (scrollComposer && els.composer && document.activeElement === els.input) {
+        try {
+          els.composer.scrollIntoView({ block: "nearest", inline: "nearest" });
+        } catch (_) {}
+      }
+    };
+    run();
+    requestAnimationFrame(run);
+    [50, 100, 200, 300].forEach((ms) => setTimeout(run, ms));
   }
 
   function installViewportSync() {
     const run = () => syncAppHeight();
     run();
     window.addEventListener("resize", run);
-    window.addEventListener("orientationchange", run);
+    window.addEventListener("orientationchange", () => scheduleViewportSync());
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", run);
       window.visualViewport.addEventListener("scroll", run);
+    }
+    if (els.input) {
+      els.input.addEventListener("focus", () => scheduleViewportSync({ scrollComposer: true }));
+      els.input.addEventListener("blur", () => scheduleViewportSync());
+    }
+    if (els.composer) {
+      els.composer.addEventListener("focusin", () => scheduleViewportSync({ scrollComposer: true }));
     }
   }
   installViewportSync();

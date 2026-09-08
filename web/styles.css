@@ -31,6 +31,7 @@
   --app-height: 100vh;
   --app-height: 100dvh;
   --app-height: 100svh;
+  --app-top: 0px;
   --rail-w: 272px;
   --stage-max: 760px;
   --focus-ring: 0 0 0 2px #050505, 0 0 0 4px rgba(228, 228, 231, 0.45);
@@ -991,6 +992,18 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   color: #fca5a5;
 }
 
+/* Pin #app to visualViewport on narrow screens (Android Chrome keyboard). */
+body.vv-pinned .app {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: var(--app-top, 0px);
+  height: var(--app-height);
+  max-height: var(--app-height);
+  overflow: hidden;
+  width: 100%;
+}
+
 @media (max-width: 800px) {
   .app {
     grid-template-columns: 1fr;
@@ -1043,6 +1056,13 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
     padding-right: 12px;
     /* Full composer visible above home indicator — no page scroll. */
     padding-bottom: calc(max(12px, var(--safe-b)) + 14px);
+  }
+  /* Keyboard open: drop large safe-area pad so the dock isn't clipped / stacked. */
+  body.vv-keyboard .composer-dock {
+    padding-bottom: 10px;
+  }
+  body.vv-keyboard .btn-jump-bottom {
+    bottom: calc(88px + 10px);
   }
   .composer-hint { display: none; }
 }
