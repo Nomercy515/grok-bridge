@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Ensure local quick-start prerequisites (curl, Go ≥ 1.22, git).
 # Sourced by start.sh. Idempotent. Not a full Tailscale install — see scripts/install.sh.
+# macOS full host: scripts/install-macos.sh. Windows twins: ensure-prereqs.ps1 / start.ps1.
 #
 # Env:
 #   SKIP_PREREQ_INSTALL=1  — check only; exit 1 if curl/Go missing or Go too old
 #   GO_INSTALL_DIR         — default: $HOME/.local/go
 #   GO_MIN_VERSION         — default: 1.22
 #   GO_VERSION             — tarball version when installing (default: 1.22.12)
+#   GROK_BRIDGE_INSTALL_WAIT=1 — optional TTY pause when a dep cannot be installed
 #
 # When sourced, defines ensure_prereqs. When executed, runs it.
 
