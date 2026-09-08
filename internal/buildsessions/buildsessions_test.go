@@ -293,3 +293,155 @@ func TestUnwrapUserQueriesHelper(t *testing.T) {
 		t.Fatalf("none: got=%q ok=%v", got, ok)
 	}
 }
+
+func TestListHidesGrokOnlySessions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GROK_BRIDGE_GROK_HOME", home)
+	t.Setenv("GROK_HOME", "")
+	t.Setenv("GROK_BRIDGE_INCLUDE_GROK_ONLY", "")
+
+	// Human + grok replies: keep, even though the latest turn is assistant.
+	writeFixture(t, home, "/tmp/proj", "human-1", map[string]any{
+		"info":              map[string]any{"id": "human-1", "cwd": "/tmp/proj"},
+		"generated_title":   "Fix login",
+		"updated_at":        "2026-09-07T12:00:00Z",
+		"num_chat_messages": 2,
+	}, []string{
+		`{"role":"user","content":"please fix login"}`,
+		`{"role":"assistant","content":"Looking at auth."}`,
+	})
+
+	// Mixed: user turn plus a later grok-to-grok style assistant reply. Keep.
+	writeFixture(t, home, "/tmp/proj", "mixed-1", map[string]any{
+		"info":            map[string]any{"id": "mixed-1", "cwd": "/tmp/proj"},
+		"generated_title": "Mixed still listed",
+		"updated_at":      "2026-09-07T13:00:00Z",
+	}, []string{
+		`{"role":"user","content":"<user_query>add tests</user_query>"}`,
+		`{"role":"assistant","content":"Spawned a helper."}`,
+		`{"role":"assistant","content":"Helper finished."}`,
+	})
+
+	// Subagent: parent grok prompt stored as role=user. Hide.
+	writeFixture(t, home, "/tmp/proj", "sub-1", map[string]any{
+		"info":              map[string]any{"id": "sub-1", "cwd": "/tmp/proj"},
+		"generated_title":   "Explore auth helpers",
+		"session_kind":      "subagent",
+		"parent_session_id": "human-1",
+		"subagent_type":     "explore",
+		"updated_at":        "2026-09-07T14:00:00Z",
+	}, []string{
+		`{"role":"user","content":"Find every login helper and report back."}`,
+		`{"role":"assistant","content":"Searching the tree."}`,
+	})
+
+	// subagent_fork, only assistant/tool. Hide.
+	writeFixture(t, home, "/tmp/proj", "subfork-1", map[string]any{
+		"info":         map[string]any{"id": "subfork-1"},
+		"title":        "Child fork",
+		"session_kind": "subagent_fork",
+		"updated_at":   "2026-09-07T14:30:00Z",
+	}, []string{
+		`{"role":"assistant","content":"Continuing the parent prompt."}`,
+		`{"role":"tool","content":"read file"}`,
+	})
+
+	// Unstamped history with no human turn. Hide.
+	writeFixture(t, home, "/tmp/proj", "agent-only", map[string]any{
+		"info":            map[string]any{"id": "agent-only"},
+		"generated_title": "Internal prompt",
+		"updated_at":      "2026-09-07T15:00:00Z",
+	}, []string{
+		`{"role":"system","content":"you are a helper"}`,
+		`{"role":"assistant","content":"Grok to grok: draft the patch."}`,
+		`{"role":"agent","content":"acknowledged"}`,
+	})
+
+	// Synthetic user scaffolding only. Hide.
+	writeFixture(t, home, "/tmp/proj", "synthetic-1", map[string]any{
+		"info":       map[string]any{"id": "synthetic-1"},
+		"title":      "Scaffold only",
+		"updated_at": "2026-09-07T15:10:00Z",
+	}, []string{
+		`{"role":"user","content":"<user_info>OS: Linux</user_info>"}`,
+		`{"role":"user","synthetic_reason":"context_inject","content":"injected"}`,
+		`{"role":"assistant","content":"ok"}`,
+	})
+
+	// Fork of a real chat still has a human turn. Keep despite parent_session_id.
+	writeFixture(t, home, "/tmp/proj", "fork-1", map[string]any{
+		"info":              map[string]any{"id": "fork-1"},
+		"generated_title":   "Forked login work",
+		"session_kind":      "fork",
+		"parent_session_id": "human-1",
+		"updated_at":        "2026-09-07T16:00:00Z",
+	}, []string{
+		`{"role":"user","content":"please fix login"}`,
+		`{"role":"assistant","content":"Continuing on the fork."}`,
+	})
+
+	// Empty unstamped session: cannot prove grok-only. Keep.
+	writeFixture(t, home, "/tmp/proj", "empty-1", map[string]any{
+		"info":       map[string]any{"id": "empty-1"},
+		"title":      "New chat",
+		"updated_at": "2026-09-07T11:00:00Z",
+	}, nil)
+
+	// ACP user_message_chunk in updates.jsonl counts as a human turn.
+	acpDir := writeFixture(t, home, "/tmp/proj", "acp-user", map[string]any{
+		"info":       map[string]any{"id": "acp-user"},
+		"title":      "ACP user",
+		"updated_at": "2026-09-07T16:30:00Z",
+	}, []string{
+		`{"role":"assistant","content":"working"}`,
+	})
+	if err := os.WriteFile(filepath.Join(acpDir, "updates.jsonl"), []byte(
+		`{"params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"ship the fix"}}}}`+"\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	list := List()
+	got := map[string]bool{}
+	for _, s := range list {
+		got[s.ID] = s.GrokOnly
+	}
+	want := []string{"build:human-1", "build:mixed-1", "build:fork-1", "build:empty-1", "build:acp-user"}
+	for _, id := range want {
+		if _, ok := got[id]; !ok {
+			t.Fatalf("expected %s in default list, got %+v", id, got)
+		}
+		if got[id] {
+			t.Fatalf("%s should not be marked grok_only", id)
+		}
+	}
+	for _, id := range []string{"build:sub-1", "build:subfork-1", "build:agent-only", "build:synthetic-1"} {
+		if _, ok := got[id]; ok {
+			t.Fatalf("grok-only %s should be hidden, got %+v", id, got)
+		}
+	}
+
+	// Opt-in lists them, badged, without dropping real chats.
+	shown := ListIncluding(true)
+	shownIDs := map[string]bool{}
+	for _, s := range shown {
+		shownIDs[s.ID] = s.GrokOnly
+	}
+	if !shownIDs["build:sub-1"] || !shownIDs["build:agent-only"] || !shownIDs["build:synthetic-1"] {
+		t.Fatalf("include should surface grok-only, got %+v", shownIDs)
+	}
+	if !shownIDs["build:sub-1"] || shownIDs["build:human-1"] {
+		t.Fatalf("badge: sub should be grok_only and human should not, got %+v", shownIDs)
+	}
+
+	// Env opt-in matches the query flag.
+	t.Setenv("GROK_BRIDGE_INCLUDE_GROK_ONLY", "1")
+	viaEnv := List()
+	envIDs := map[string]struct{}{}
+	for _, s := range viaEnv {
+		envIDs[s.ID] = struct{}{}
+	}
+	if _, ok := envIDs["build:sub-1"]; !ok {
+		t.Fatalf("env include missing sub-1: %+v", envIDs)
+	}
+}
