@@ -18,23 +18,70 @@ Set-Location $Root
 if (-not $env:REQUIRE_GROK_BUILD) { $env:REQUIRE_GROK_BUILD = '1' }
 
 function Update-SessionPath {
-    # Same refresh ensure-prereqs.ps1 uses after winget/choco/scoop installs.
-    $machine = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
-    $user = [System.Environment]::GetEnvironmentVariable('Path', 'User')
-    $parts = @()
-    if ($machine) { $parts += $machine }
-    if ($user) { $parts += $user }
+    param([string[]]$PrependDirs = @())
+
+    # Prepend Tailscale (and any other newly discovered dirs) onto the current
+    # process PATH, then merge Machine+User entries that are not already present.
+    # Never replace $env:Path — a session-only go (profile, zip, mise) must stay
+    # findable after a Tailscale install attempt, or the later `go build` fails.
+    $ordered = New-Object System.Collections.Generic.List[string]
+    foreach ($dir in $PrependDirs) {
+        if ($dir) { [void]$ordered.Add($dir) }
+    }
+
     # Tailscale's MSI drops tailscale.exe here even when the installer has not
-    # updated this session's PATH yet.
+    # updated this session's PATH yet. Prepend so Get-Command finds it.
     foreach ($dirRoot in @(${env:ProgramFiles}, ${env:ProgramFiles(x86)})) {
         if (-not $dirRoot) { continue }
         $tsDir = Join-Path $dirRoot 'Tailscale'
         if (Test-Path -LiteralPath (Join-Path $tsDir 'tailscale.exe')) {
-            $parts = @($tsDir) + $parts
+            [void]$ordered.Add($tsDir)
         }
     }
-    if ($parts.Count -gt 0) {
-        $env:Path = ($parts -join ';')
+
+    if ($env:Path) {
+        foreach ($dir in ($env:Path -split ';')) {
+            if ($dir) { [void]$ordered.Add($dir) }
+        }
+    }
+
+    $machine = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $user = [System.Environment]::GetEnvironmentVariable('Path', 'User')
+    foreach ($chunk in @($machine, $user)) {
+        if (-not $chunk) { continue }
+        foreach ($dir in ($chunk -split ';')) {
+            if ($dir) { [void]$ordered.Add($dir) }
+        }
+    }
+
+    # Standard install locations, appended so they do not shadow a session-only go.
+    foreach ($dirRoot in @(${env:ProgramFiles}, ${env:ProgramFiles(x86)})) {
+        if (-not $dirRoot) { continue }
+        $goBin = Join-Path $dirRoot 'Go\bin'
+        if (Test-Path -LiteralPath (Join-Path $goBin 'go.exe')) {
+            [void]$ordered.Add($goBin)
+        }
+        foreach ($gitRel in @('Git\cmd', 'Git\bin')) {
+            $gitDir = Join-Path $dirRoot $gitRel
+            if (Test-Path -LiteralPath (Join-Path $gitDir 'git.exe')) {
+                [void]$ordered.Add($gitDir)
+            }
+        }
+    }
+
+    $seen = @{}
+    $merged = New-Object System.Collections.Generic.List[string]
+    foreach ($dir in $ordered) {
+        $trimmed = "$dir".Trim()
+        if (-not $trimmed) { continue }
+        $key = $trimmed.TrimEnd([char]92).ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        [void]$merged.Add($trimmed)
+    }
+
+    if ($merged.Count -gt 0) {
+        $env:Path = ($merged -join ';')
     }
 }
 

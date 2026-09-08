@@ -59,23 +59,131 @@ function Find-PackageManager {
     return $null
 }
 
+# install.ps1 defines this first; do not replace that version when dot-sourced.
+if (-not (Get-Command -Name Update-SessionPath -CommandType Function -ErrorAction SilentlyContinue)) {
+function Update-SessionPath {
+    param([string[]]$PrependDirs = @())
+
+    # Prepend newly discovered dirs (Tailscale, caller extras) onto the current
+    # process PATH, then merge Machine+User. Never discard $env:Path — a
+    # session-only go (profile, zip, mise) must stay findable.
+
+    $ordered = New-Object System.Collections.Generic.List[string]
+    foreach ($dir in $PrependDirs) {
+        if ($dir) { [void]$ordered.Add($dir) }
+    }
+
+    foreach ($dirRoot in @(${env:ProgramFiles}, ${env:ProgramFiles(x86)})) {
+        if (-not $dirRoot) { continue }
+        $tsDir = Join-Path $dirRoot 'Tailscale'
+        if (Test-Path -LiteralPath (Join-Path $tsDir 'tailscale.exe')) {
+            [void]$ordered.Add($tsDir)
+        }
+    }
+
+    if ($env:Path) {
+        foreach ($dir in ($env:Path -split ';')) {
+            if ($dir) { [void]$ordered.Add($dir) }
+        }
+    }
+
+    $machine = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $user = [System.Environment]::GetEnvironmentVariable('Path', 'User')
+    foreach ($chunk in @($machine, $user)) {
+        if (-not $chunk) { continue }
+        foreach ($dir in ($chunk -split ';')) {
+            if ($dir) { [void]$ordered.Add($dir) }
+        }
+    }
+
+    # Standard install locations, appended so they do not shadow a session-only go.
+    foreach ($dirRoot in @(${env:ProgramFiles}, ${env:ProgramFiles(x86)})) {
+        if (-not $dirRoot) { continue }
+        $goBin = Join-Path $dirRoot 'Go\bin'
+        if (Test-Path -LiteralPath (Join-Path $goBin 'go.exe')) {
+            [void]$ordered.Add($goBin)
+        }
+        foreach ($gitRel in @('Git\cmd', 'Git\bin')) {
+            $gitDir = Join-Path $dirRoot $gitRel
+            if (Test-Path -LiteralPath (Join-Path $gitDir 'git.exe')) {
+                [void]$ordered.Add($gitDir)
+            }
+        }
+    }
+
+    $seen = @{}
+    $merged = New-Object System.Collections.Generic.List[string]
+    foreach ($dir in $ordered) {
+        $trimmed = "$dir".Trim()
+        if (-not $trimmed) { continue }
+        $key = $trimmed.TrimEnd([char]92).ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        [void]$merged.Add($trimmed)
+    }
+
+    if ($merged.Count -gt 0) {
+        $env:Path = ($merged -join ';')
+    }
+}
+}
+
+function Test-ToolPresent {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    if (Get-Command $Name -ErrorAction SilentlyContinue) { return $true }
+    if ($Name -notmatch '\.exe$' -and (Get-Command "$Name.exe" -ErrorAction SilentlyContinue)) {
+        return $true
+    }
+
+    # Get-Command can miss a binary added to PATH after an earlier miss in this
+    # session. Probe the refreshed PATH so an already-installed tool still counts.
+    $leaf = if ($Name -match '\.(exe|cmd|bat)$') { $Name } else { "$Name.exe" }
+    foreach ($dir in ($env:Path -split ';')) {
+        if ([string]::IsNullOrWhiteSpace($dir)) { continue }
+        if (Test-Path -LiteralPath (Join-Path $dir.Trim() $leaf)) { return $true }
+    }
+    return $false
+}
+
 function Install-WithPkgMgr {
-    param([string]$Mgr, [string]$WingetId, [string]$ChocoId, [string]$ScoopId)
+    param(
+        [string]$Mgr,
+        [string]$WingetId,
+        [string]$ChocoId,
+        [string]$ScoopId,
+        [string]$CommandName
+    )
+
+    $code = 1
     switch ($Mgr) {
         'winget' {
             winget install --id $WingetId -e --accept-source-agreements --accept-package-agreements
-            return $LASTEXITCODE -eq 0
+            $code = $LASTEXITCODE
         }
         'choco' {
             choco install $ChocoId -y
-            return $LASTEXITCODE -eq 0
+            $code = $LASTEXITCODE
         }
         'scoop' {
             scoop install $ScoopId
-            return $LASTEXITCODE -eq 0
+            $code = $LASTEXITCODE
         }
         default { return $false }
     }
+    if ($null -eq $code) { $code = 0 }
+    if ($code -eq 0) { return $true }
+
+    # winget/choco often exit non-zero when the package is already installed.
+    # Same pattern as install.ps1 Tailscale: refresh PATH and re-check the tool
+    # before treating that as a hard failure (so start.ps1 does not exit 2).
+    if ($Mgr -in @('winget', 'choco', 'scoop')) {
+        Update-SessionPath
+        if ($CommandName -and (Test-ToolPresent -Name $CommandName)) {
+            return $true
+        }
+    }
+    return $false
 }
 
 function Ensure-Git {
@@ -90,13 +198,17 @@ function Ensure-Git {
     $mgr = Find-PackageManager
     if ($mgr) {
         Write-PrInfo "Installing Git via $mgr"
-        if (Install-WithPkgMgr -Mgr $mgr -WingetId 'Git.Git' -ChocoId 'git' -ScoopId 'git') {
-            $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
-                         [System.Environment]::GetEnvironmentVariable('Path', 'User')
-            if (Get-Command git -ErrorAction SilentlyContinue) {
-                Write-PrInfo "Found git after install"
-                return
-            }
+        # Always refresh after the attempt. winget non-zero (already installed)
+        # must not skip the re-probe, and must not wipe a session-only PATH.
+        [void](Install-WithPkgMgr -Mgr $mgr -WingetId 'Git.Git' -ChocoId 'git' -ScoopId 'git' -CommandName 'git')
+        Update-SessionPath
+        if (Get-Command git -ErrorAction SilentlyContinue) {
+            Write-PrInfo "Found git after install: $((Get-Command git).Source)"
+            return
+        }
+        if (Test-ToolPresent -Name 'git') {
+            Write-PrInfo "Found git after install"
+            return
         }
     }
     Write-PrWarn "could not auto-install git — continuing; go build may still work"
@@ -123,14 +235,22 @@ function Ensure-Go {
     $mgr = Find-PackageManager
     if ($mgr) {
         Write-PrInfo "Installing Go via $mgr"
-        if (Install-WithPkgMgr -Mgr $mgr -WingetId 'GoLang.Go' -ChocoId 'golang' -ScoopId 'go') {
-            $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
-                         [System.Environment]::GetEnvironmentVariable('Path', 'User')
+        # Always refresh after the attempt. winget/choco non-zero when Go is
+        # already installed used to skip this re-probe and start.ps1 exited 2.
+        [void](Install-WithPkgMgr -Mgr $mgr -WingetId 'GoLang.Go' -ChocoId 'golang' -ScoopId 'go' -CommandName 'go')
+        Update-SessionPath
+        if (Get-Command go -ErrorAction SilentlyContinue) {
             if (Test-GoVersionOk) {
                 $ver = & go env GOVERSION 2>$null
                 Write-PrInfo "Found Go $ver after install"
                 return
             }
+            Write-PrInfo "Found go after install: $((Get-Command go).Source)"
+            return
+        }
+        if (Test-ToolPresent -Name 'go') {
+            Write-PrInfo "Found go after install"
+            return
         }
     }
     Invoke-PrWaitForUser -Dep "Go ≥ $GoMinVersion" -Steps @(
