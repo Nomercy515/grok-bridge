@@ -51,7 +51,7 @@ run_priv() {
 info() { echo "==> $*"; }
 warn() { echo "warning: $*" >&2; }
 
-# --- 1. Go toolchain ---
+# --- 1. Go toolchain + Grok Build readiness ---
 info "Checking Go toolchain"
 if ! command -v go >/dev/null 2>&1; then
   echo "error: go not found. Install Go ≥ 1.22 from https://go.dev/dl/ then re-run." >&2
@@ -59,6 +59,10 @@ if ! command -v go >/dev/null 2>&1; then
 fi
 GO_VER="$(go env GOVERSION 2>/dev/null || go version)"
 info "Found $GO_VER"
+
+# shellcheck disable=SC1091
+source "$ROOT/scripts/ensure-grok-build.sh"
+ensure_grok_build
 
 info "Building grok-bridge binary"
 mkdir -p bin
@@ -68,10 +72,13 @@ go build -o bin/grok-bridge ./cmd/grok-bridge
 info "Making scripts executable"
 chmod +x \
   "$ROOT/start.sh" \
+  "$ROOT/scripts/ensure-prereqs.sh" \
+  "$ROOT/scripts/ensure-grok-build.sh" \
   "$ROOT/scripts/supervise.sh" \
   "$ROOT/scripts/gen-dev-certs.sh" \
   "$ROOT/scripts/refresh-endpoint.sh" \
   "$ROOT/scripts/install.sh" \
+  "$ROOT/scripts/install-macos.sh" \
   2>/dev/null || true
 
 # --- 3. Tailscale ---
