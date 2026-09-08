@@ -79,13 +79,34 @@ git clone <this-repo> && cd grok-bridge
 # Pairing code is printed in the terminal on first start
 ```
 
-`start.sh` auto-checks and installs Go (≥ 1.22), curl, and git when possible (set `SKIP_PREREQ_INSTALL=1` to check only). Full Tailscale + systemd setup: `scripts/install.sh`.
+`start.sh` auto-checks and installs Go (≥ 1.22), curl, and git when possible (set `SKIP_PREREQ_INSTALL=1` to check only), then checks Grok Build readiness (`scripts/ensure-grok-build.sh`). Full Tailscale + systemd setup: `scripts/install.sh`. Windows: `start.ps1`. See **Native hosts** below.
 
 Supervised (recommended):
 
 ```bash
 ./scripts/supervise.sh
 ```
+
+
+## Native hosts (Linux / macOS / Windows)
+
+Run Bridge as a **source host** from this tree on all three OSes. Dependency scripts auto-install when safe; otherwise they **exit with clear manual steps** and ask you to re-run (they do not hang forever waiting for input unless `GROK_BRIDGE_INSTALL_WAIT=1` on a TTY).
+
+| OS | Start | Install / ensure |
+|----|-------|------------------|
+| Linux | `./start.sh` | `./scripts/install.sh` (Tailscale + systemd) |
+| macOS | `./start.sh` | `./scripts/install-macos.sh` (Homebrew; Tailscale cask) |
+| Windows | `start.ps1` | `scripts/install.ps1` (winget/choco/scoop when available) |
+
+`start.sh` / `start.ps1` check **Grok Build** early (before building the hub): `grok` on `PATH` or `GROK_BRIDGE_GROK_BIN`, and Grok home via `GROK_BRIDGE_GROK_HOME` → `GROK_HOME` → `$HOME/.grok` (Windows `%USERPROFILE%\.grok`). Missing `sessions/` only warns — hub-native chats still work.
+
+| Env | Meaning |
+|-----|---------|
+| `SKIP_GROK_BUILD_CHECK=1` | Skip the Build readiness check |
+| `REQUIRE_GROK_BUILD=1` | Fail start/install if `grok` is missing (default: warn + hub-only) |
+| `SKIP_PREREQ_INSTALL=1` | Check Go/curl/git only; do not auto-install |
+
+**Grok Build install remains vendor/manual** — this repo does not ship an unofficial `grok` installer. Short matrix: `docs/NATIVE_HOSTS.md`.
 
 ## Install (Linux VM / host)
 
@@ -143,6 +164,9 @@ This project does not invent other mesh, tunnel, or LAN auto-discovery paths.
 | Grok agent WS (Build ACP) | `ws://127.0.0.1:2419/ws` | `GROK_BRIDGE_GROK_AGENT_WS` |
 | Grok agent secret | — | `GROK_BRIDGE_GROK_AGENT_SECRET` (or `GROK_AGENT_SECRET`) |
 | Auto-start agent serve | off | `GROK_BRIDGE_GROK_AGENT_AUTO_START=1` (`grok` on PATH only) |
+| Skip Build check at start | off | `SKIP_GROK_BUILD_CHECK=1` |
+| Require `grok` at start | off (warn) | `REQUIRE_GROK_BUILD=1` (hard-fail; install-macos / install.ps1 default on) |
+| Grok binary override | PATH `grok` | `GROK_BRIDGE_GROK_BIN` |
 
 Never commit real secrets, webhook URLs, or sender keys. See `docs/AGENT_BRIDGE.md` and `docs/grok-bridge.env.example`.
 
