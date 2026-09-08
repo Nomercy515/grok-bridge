@@ -18,7 +18,21 @@ import (
 // List walks $GROK_HOME/sessions for summary.json files and returns
 // SessionSummary values with Source "build" and id prefixed "build:".
 // Missing or unreadable Grok home yields an empty slice (hub-native still works).
+//
+// Grok-only sessions (subagent / hidden, or history with no human turn)
+// are omitted unless GROK_BRIDGE_INCLUDE_GROK_ONLY=1. Use ListIncluding
+// to honor ?include=grok-only.
 func List() []sessions.SessionSummary {
+	return listSessions(includeGrokOnlyFromEnv())
+}
+
+// ListIncluding is List with an explicit opt-in for grok-only sessions.
+// Env GROK_BRIDGE_INCLUDE_GROK_ONLY=1 also forces inclusion.
+func ListIncluding(includeGrokOnly bool) []sessions.SessionSummary {
+	return listSessions(includeGrokOnly || includeGrokOnlyFromEnv())
+}
+
+func listSessions(includeGrokOnly bool) []sessions.SessionSummary {
 	root := sessionsRoot()
 	if root == "" {
 		return nil
@@ -39,8 +53,12 @@ func List() []sessions.SessionSummary {
 		if d.Name() != "summary.json" {
 			return nil
 		}
-		sum, ok := readSummaryFile(path)
+		sum, raw, ok := readSummaryFile(path)
 		if !ok || sum.ID == "" {
+			return nil
+		}
+		grokOnly := isGrokOnly(path, raw)
+		if grokOnly && !includeGrokOnly {
 			return nil
 		}
 		apiID := WithPrefix(sum.ID)
@@ -50,6 +68,9 @@ func List() []sessions.SessionSummary {
 		seen[apiID] = struct{}{}
 		sum.ID = apiID
 		sum.Source = "build"
+		if grokOnly {
+			sum.GrokOnly = true
+		}
 		out = append(out, sum)
 		return nil
 	})
@@ -74,7 +95,7 @@ func Get(id string) (*sessions.Session, error) {
 	if err != nil || dir == "" {
 		return nil, os.ErrNotExist
 	}
-	sum, ok := readSummaryFile(filepath.Join(dir, "summary.json"))
+	sum, _, ok := readSummaryFile(filepath.Join(dir, "summary.json"))
 	if !ok {
 		return nil, os.ErrNotExist
 	}
@@ -198,7 +219,6 @@ func pathUnescape(s string) (string, error) {
 	return url.PathUnescape(s)
 }
 
-
 // signals.json (beside summary.json) carries live context-window usage from Grok Build.
 type rawSignals struct {
 	ContextTokensUsed   *int `json:"contextTokensUsed"`
@@ -242,16 +262,24 @@ type rawSummary struct {
 	NumMessages     int             `json:"num_messages"`
 	NumChatMessages int             `json:"num_chat_messages"`
 	MessageCount    int             `json:"message_count"`
+	// Grok Build listing fields (see grokonly.go).
+	SessionKind     string `json:"session_kind"`
+	Hidden          *bool  `json:"hidden"`
+	ParentSessionID string `json:"parent_session_id"`
+	SubagentType    string `json:"subagent_type"`
+	SubagentPersona string `json:"subagent_persona"`
+	SubagentRole    string `json:"subagent_role"`
+	SubagentDepth   *int   `json:"subagent_depth"`
 }
 
-func readSummaryFile(path string) (sessions.SessionSummary, bool) {
+func readSummaryFile(path string) (sessions.SessionSummary, rawSummary, bool) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return sessions.SessionSummary{}, false
+		return sessions.SessionSummary{}, rawSummary{}, false
 	}
 	var raw rawSummary
 	if json.Unmarshal(b, &raw) != nil {
-		return sessions.SessionSummary{}, false
+		return sessions.SessionSummary{}, rawSummary{}, false
 	}
 	id := raw.Info.ID
 	if id == "" {
@@ -286,7 +314,7 @@ func readSummaryFile(path string) (sessions.SessionSummary, bool) {
 		UpdatedAt:    updated,
 		MessageCount: count,
 		Source:       "build",
-	}, true
+	}, raw, true
 }
 
 func firstNonEmpty(vals ...string) string {

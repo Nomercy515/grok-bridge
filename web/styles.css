@@ -273,6 +273,11 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   border-color: #6366f1;
   background: rgba(99, 102, 241, 0.12);
 }
+.src-badge.grok-only {
+  color: #d4d4d8;
+  border-color: #52525b;
+  background: rgba(255, 255, 255, 0.04);
+}
 .build-ro-hint {
   margin: 0 12px 8px;
   padding: 8px 12px;
