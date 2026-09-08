@@ -8,13 +8,20 @@ cd "$ROOT"
 source "$ROOT/scripts/ensure-prereqs.sh"
 ensure_prereqs
 
+# Grok Build readiness (warn-by-default; REQUIRE_GROK_BUILD=1 to hard-fail).
+# shellcheck disable=SC1091
+source "$ROOT/scripts/ensure-grok-build.sh"
+ensure_grok_build
+
 chmod +x \
   "$ROOT/start.sh" \
   "$ROOT/scripts/ensure-prereqs.sh" \
+  "$ROOT/scripts/ensure-grok-build.sh" \
   "$ROOT/scripts/supervise.sh" \
   "$ROOT/scripts/gen-dev-certs.sh" \
   "$ROOT/scripts/refresh-endpoint.sh" \
   "$ROOT/scripts/install.sh" \
+  "$ROOT/scripts/install-macos.sh" \
   2>/dev/null || true
 
 mkdir -p bin data
