@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -160,6 +162,68 @@ func (c *Client) doInitialize(ctx context.Context) error {
 	}
 	_, err := c.request(ctx, "initialize", params)
 	return err
+}
+
+// NewSession creates a Grok Build session via ACP session/new.
+// cwd should be an absolute path (relative paths are resolved with filepath.Abs).
+// Returns the raw ACP session id (no build: prefix).
+func (c *Client) NewSession(ctx context.Context, cwd string) (string, error) {
+	if err := c.EnsureConnected(ctx); err != nil {
+		return "", err
+	}
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return "", fmt.Errorf("session/new: cwd required")
+	}
+	if !filepath.IsAbs(cwd) {
+		abs, err := filepath.Abs(cwd)
+		if err != nil {
+			return "", fmt.Errorf("session/new: cwd: %w", err)
+		}
+		cwd = abs
+	}
+	params := map[string]any{
+		"cwd":        cwd,
+		"mcpServers": []any{},
+		"_meta":      map[string]any{"yoloMode": true},
+	}
+	raw, err := c.request(ctx, "session/new", params)
+	if err != nil {
+		return "", fmt.Errorf("session/new: %w", err)
+	}
+	sid := parseNewSessionID(raw)
+	if sid == "" {
+		return "", fmt.Errorf("session/new: empty sessionId in %s", string(raw))
+	}
+	c.loadedMu.Lock()
+	c.loaded[sid] = cwd
+	c.loadedMu.Unlock()
+	return sid, nil
+}
+
+func parseNewSessionID(raw json.RawMessage) string {
+	var result struct {
+		SessionID string `json:"sessionId"`
+	}
+	if json.Unmarshal(raw, &result) == nil && result.SessionID != "" {
+		return result.SessionID
+	}
+	var alt map[string]any
+	if json.Unmarshal(raw, &alt) != nil {
+		return ""
+	}
+	if s := strAny(alt["sessionId"]); s != "" {
+		return s
+	}
+	return strAny(alt["session_id"])
+}
+
+// LoadedCwd returns the cwd used at session/new or session/load, if known.
+func (c *Client) LoadedCwd(rawSessionID string) (string, bool) {
+	c.loadedMu.Lock()
+	defer c.loadedMu.Unlock()
+	cwd, ok := c.loaded[rawSessionID]
+	return cwd, ok
 }
 
 // LoadSession resumes an existing Build session (raw UUID, not build: prefix).
