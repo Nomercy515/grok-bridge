@@ -1174,13 +1174,41 @@
   }
 
   async function newSession() {
+    const payload = DEMO
+      ? { title: "Demo chat", demo: true }
+      : { title: "New chat" };
     const res = await api("/api/sessions", {
       method: "POST",
-      body: JSON.stringify({ title: DEMO ? "Demo chat" : "New chat" }),
+      body: JSON.stringify(payload),
     });
-    const sess = await res.json();
+    const sess = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg = sess.hint || sess.error || "Could not create a Grok Build session";
+      showCreateError(msg);
+      return;
+    }
+    hideCreateError();
     await refreshSessions();
     await openSession(sess.id);
+  }
+
+  function showCreateError(msg) {
+    let banner = document.getElementById("newSessionError");
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "newSessionError";
+      banner.className = "build-ro-hint";
+      banner.setAttribute("role", "status");
+      const host = els.composer && els.composer.parentNode;
+      if (host) host.insertBefore(banner, els.composer);
+    }
+    banner.textContent = msg;
+    banner.hidden = false;
+  }
+
+  function hideCreateError() {
+    const banner = document.getElementById("newSessionError");
+    if (banner) banner.hidden = true;
   }
 
   async function sendMessage(text) {

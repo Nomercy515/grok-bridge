@@ -67,6 +67,16 @@ func (f *fakeACP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					"agentCapabilities": map[string]any{"loadSession": true},
 				},
 			})
+		case "session/new":
+			cwd, _ := params["cwd"].(string)
+			sid := "created-sess-1"
+			f.mu.Lock()
+			f.sessions[sid] = cwd
+			f.mu.Unlock()
+			_ = conn.WriteJSON(map[string]any{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]any{"sessionId": sid},
+			})
 		case "session/load":
 			sid, _ := params["sessionId"].(string)
 			cwd, _ := params["cwd"].(string)
@@ -210,6 +220,53 @@ func TestClientLoadAndPrompt(t *testing.T) {
 	}
 	if text != "Echo: hi there" {
 		t.Fatalf("text=%q", text)
+	}
+}
+
+func TestClientNewSession(t *testing.T) {
+	fake := newFakeACP("sekrit")
+	ts := httptest.NewServer(fake)
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	c := NewClient(Config{WSURL: wsURL, Secret: "sekrit", AutoStart: false})
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sid, err := c.NewSession(ctx, "/tmp/new-proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid != "created-sess-1" {
+		t.Fatalf("sessionId=%q", sid)
+	}
+	fake.mu.Lock()
+	if fake.sessions[sid] != "/tmp/new-proj" {
+		t.Fatalf("cwd=%q", fake.sessions[sid])
+	}
+	fake.mu.Unlock()
+
+	c.loadedMu.Lock()
+	got := c.loaded[sid]
+	c.loadedMu.Unlock()
+	if got != "/tmp/new-proj" {
+		t.Fatalf("loaded cwd=%q", got)
+	}
+}
+
+func TestClientNewSessionUnreachable(t *testing.T) {
+	c := NewClient(Config{WSURL: "ws://127.0.0.1:1/ws", Secret: "x", AutoStart: false})
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := c.NewSession(ctx, "/tmp/proj")
+	if err == nil {
+		t.Fatal("expected error when agent unreachable")
+	}
+	if !strings.Contains(err.Error(), "grok agent") && !strings.Contains(err.Error(), "session/new") {
+		t.Fatalf("err=%v", err)
 	}
 }
 

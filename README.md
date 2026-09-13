@@ -32,7 +32,7 @@ Default listen port: **4020**. Canonical phone URL:
 ## What you get
 
 - **Desktop ↔ phone session bridge** — one server-authoritative transcript under `data/sessions/`; pick up the same conversation on another Tailscale device
-- **Grok Build sessions (live ACP)** — list/open on-disk Build chats from `$GROK_HOME/sessions` and **send/resume** via `grok agent serve` (ACP); IDs prefixed `build:`
+- **Grok Build sessions (live ACP)** — **New session** creates a real Build chat via ACP `session/new` (`build:…` ids); list/open on-disk chats from `$GROK_HOME/sessions`; **send/resume** via `grok agent serve`. Demo (`/?demo=1`) still creates hub-native sessions.
 - **Live WebSocket chat** — streaming assistant replies with fan-out to every connected client; `session.snapshot` resume after reconnect
 - **Pairing lock** — 6-digit code → hub bearer token; code rotates after each successful pair; token rotate without re-pairing
 - **Mobile-friendly UI** — dark greyscale cockpit, session rail, floating composer, live/sync/offline status (see `docs/UI_NOTES.md`)
@@ -140,6 +140,7 @@ This project does not invent other mesh, tunnel, or LAN auto-discovery paths.
 | Agent timeout | `120s` | `GROK_BRIDGE_AGENT_TIMEOUT` |
 | Allow `?token=` | off | `GROK_BRIDGE_ALLOW_QUERY_TOKEN=1` (discouraged) |
 | Grok home (Build sessions) | `$HOME/.grok` | `GROK_BRIDGE_GROK_HOME` then `GROK_HOME` then `~/.grok` (env-agnostic; missing → Build list empty) |
+| New-session cwd | hub process cwd | `GROK_BRIDGE_CWD` or POST `cwd` (absolute); used for ACP `session/new` |
 | Grok-only Build chats | hidden | `GROK_BRIDGE_INCLUDE_GROK_ONLY=1` or `GET /api/sessions?include=grok-only` (subagent / no human turn) |
 | Grok agent WS (Build ACP) | `ws://127.0.0.1:2419/ws` | `GROK_BRIDGE_GROK_AGENT_WS` |
 | Grok agent secret | — | `GROK_BRIDGE_GROK_AGENT_SECRET` (or `GROK_AGENT_SECRET`) |
@@ -177,7 +178,7 @@ Never commit real secrets, webhook URLs, or sender keys. See `docs/AGENT_BRIDGE.
 | POST | `/api/auth/pair` | no | `{"code"}` → token |
 | POST | `/api/auth/rotate` | bearer | new token |
 | POST | `/api/auth/rotate-pairing` | bearer | new pairing code |
-| GET/POST | `/api/sessions` | bearer | list (bridge + Build with `source`; grok-only hidden unless `?include=grok-only`) / create (bridge only) |
+| GET/POST | `/api/sessions` | bearer | list (bridge + Build with `source`; grok-only hidden unless `?include=grok-only`) / create (`session/new` → `build:…`; `{demo:true}` or `?demo=1` keeps hub-native) |
 | GET | `/api/sessions/{id}` | bearer | full transcript (`build:…` from disk; send resumes via ACP) |
 | POST | `/api/sessions/{id}/messages` | bearer | HTTP chat fallback |
 | POST | `/api/sessions/{id}/cancel` | bearer | Stop mid-turn |
