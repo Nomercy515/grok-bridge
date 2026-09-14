@@ -751,8 +751,37 @@
   }
 
   /**
-   * XSS-safe message HTML: escape first, then bold; wrap complete
-   * <system-reminder> blocks (case-insensitive) as muted asides.
+   * ATX headers (MD-style), line-based, after escapeHtml:
+   * optional leading whitespace, then # / ## + space, then rest of line.
+   * Markers are stripped; content stays escaped. ## → h2 (required),
+   * # → h1 (same path). ###+ left literal.
+   */
+  function formatAtxHeaders(escaped) {
+    return String(escaped || "").replace(
+      /^[ \t]*(#{1,2})[ \t]+([^\n]+)/gm,
+      function (_m, hashes, content) {
+        const level = hashes.length;
+        return (
+          '<span class="msg-h' +
+          level +
+          '" role="heading" aria-level="' +
+          level +
+          '">' +
+          content +
+          "</span>"
+        );
+      }
+    );
+  }
+
+  /** Escaped text → ATX headers, then bold. Tiny md subset only. */
+  function formatMdSubset(escaped) {
+    return formatBold(formatAtxHeaders(escaped));
+  }
+
+  /**
+   * XSS-safe message HTML: escape first, then ATX headers + bold; wrap
+   * complete <system-reminder> blocks (case-insensitive) as muted asides.
    * Complete <user_query>…</user_query> is unwrapped into the normal
    * message body (no labeled aside). Lone/unclosed tags stay escaped.
    */
@@ -763,11 +792,11 @@
         '<aside class="sys-reminder" role="note">' +
         '<div class="sys-reminder-label">System reminder</div>' +
         '<div class="sys-reminder-body">' +
-        formatBold(escapeHtml(inner)) +
+        formatMdSubset(escapeHtml(inner)) +
         "</div></aside>"
       );
     }
-    return formatBold(escapeHtml(inner));
+    return formatMdSubset(escapeHtml(inner));
   }
 
   function formatMessageHTML(raw) {
@@ -779,13 +808,13 @@
     let m;
     while ((m = re.exec(s)) !== null) {
       if (m.index > last) {
-        html += formatBold(escapeHtml(s.slice(last, m.index)));
+        html += formatMdSubset(escapeHtml(s.slice(last, m.index)));
       }
       html += formatTaggedAside(m[1], m[2]);
       last = m.index + m[0].length;
     }
     if (last < s.length) {
-      html += formatBold(escapeHtml(s.slice(last)));
+      html += formatMdSubset(escapeHtml(s.slice(last)));
     }
     return html;
   }
