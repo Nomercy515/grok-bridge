@@ -445,3 +445,54 @@ func TestListHidesGrokOnlySessions(t *testing.T) {
 		t.Fatalf("env include missing sub-1: %+v", envIDs)
 	}
 }
+
+func TestWalkParentsForGrok(t *testing.T) {
+	root := t.TempDir()
+	user := filepath.Join(root, "home", "alice")
+	data := filepath.Join(user, "project", "app", "data")
+	if err := os.MkdirAll(filepath.Join(user, ".grok", "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := walkParentsForGrok(data)
+	want := filepath.Join(user, ".grok")
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	if walkParentsForGrok(t.TempDir()) != "" {
+		t.Fatal("empty tree should not infer")
+	}
+}
+
+func TestInferGrokHomeFromDataDir(t *testing.T) {
+	root := t.TempDir()
+	user := filepath.Join(root, "home", "alice")
+	data := filepath.Join(user, "proj", "data")
+	if err := os.MkdirAll(filepath.Join(user, ".grok", "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GROK_BRIDGE_GROK_HOME", "")
+	t.Setenv("GROK_HOME", "")
+	t.Setenv("GROK_BRIDGE_DATA", data)
+	got := inferGrokHome()
+	want := filepath.Join(user, ".grok")
+	if got != want {
+		t.Fatalf("infer: got %q want %q", got, want)
+	}
+}
+
+func TestGrokHomePrefersProcessHomeWithSummaries(t *testing.T) {
+	t.Setenv("GROK_BRIDGE_GROK_HOME", "")
+	t.Setenv("GROK_HOME", "")
+	// Explicit env still wins even when the path has no sessions.
+	missing := filepath.Join(t.TempDir(), "no-grok-home")
+	t.Setenv("GROK_BRIDGE_GROK_HOME", missing)
+	if got := GrokHome(); got != filepath.Clean(missing) {
+		t.Fatalf("explicit missing override: got %q want %q", got, missing)
+	}
+}

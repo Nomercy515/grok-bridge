@@ -1100,56 +1100,104 @@
     }
   }
 
+  const OLDER_AFTER_SEC = 7 * 86400;
+  let olderOpen = false;
+
+  function sessionEpoch(s) {
+    const raw = s && (s.updated_at || s.created_at);
+    if (raw == null || raw === "") return 0;
+    if (typeof raw === "number") return raw > 1e12 ? raw / 1000 : raw;
+    const ms = Date.parse(raw);
+    return Number.isNaN(ms) ? 0 : ms / 1000;
+  }
+
+  function isOlderSession(s) {
+    const sec = sessionEpoch(s);
+    if (!sec) return false;
+    return (Date.now() / 1000 - sec) >= OLDER_AFTER_SEC;
+  }
+
+  function sessionRow(s) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    const build = isBuildSession(s);
+    const unread = unreadIds.has(s.id);
+    btn.className = "session-item" + (s.id === activeId ? " active" : "") + (build ? " build" : "") + (unread ? " unread" : "");
+    if (unread) btn.setAttribute("aria-label", (s.title || "Untitled") + ", unread");
+    btn.innerHTML = '<div class="t-row"><div class="t"></div></div><div class="m"></div>';
+    if (unread) {
+      const dot = document.createElement("span");
+      dot.className = "unread-dot";
+      dot.setAttribute("aria-hidden", "true");
+      btn.appendChild(dot);
+    }
+    btn.querySelector(".t").textContent = s.title || "Untitled";
+    if (build) {
+      const badge = document.createElement("span");
+      badge.className = "src-badge build";
+      badge.textContent = "Build";
+      badge.title = "Grok Build session";
+      btn.querySelector(".t-row").appendChild(badge);
+    }
+    if (s.grok_only) {
+      const badge = document.createElement("span");
+      badge.className = "src-badge grok-only";
+      badge.textContent = "Grok only";
+      badge.title = "No human turn — agent-to-agent prompt";
+      btn.querySelector(".t-row").appendChild(badge);
+    }
+    const meta = btn.querySelector(".m");
+    const count = (s.message_count || 0) + " msg";
+    const rel = relativeTime(s.updated_at || s.created_at);
+    meta.textContent = "";
+    const c = document.createElement("span");
+    c.textContent = count;
+    meta.appendChild(c);
+    if (rel) {
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.setAttribute("aria-hidden", "true");
+      meta.appendChild(dot);
+      const r = document.createElement("span");
+      r.textContent = rel;
+      meta.appendChild(r);
+    }
+    btn.onclick = () => openSession(s.id);
+    return btn;
+  }
+
   function renderSessionList() {
     els.sessionList.innerHTML = "";
-    sessions.forEach((s) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      const build = isBuildSession(s);
-      const unread = unreadIds.has(s.id);
-      btn.className = "session-item" + (s.id === activeId ? " active" : "") + (build ? " build" : "") + (unread ? " unread" : "");
-      if (unread) btn.setAttribute("aria-label", (s.title || "Untitled") + ", unread");
-      btn.innerHTML = '<div class="t-row"><div class="t"></div></div><div class="m"></div>';
-      if (unread) {
-        const dot = document.createElement("span");
-        dot.className = "unread-dot";
-        dot.setAttribute("aria-hidden", "true");
-        btn.appendChild(dot);
-      }
-      btn.querySelector(".t").textContent = s.title || "Untitled";
-      if (build) {
-        const badge = document.createElement("span");
-        badge.className = "src-badge build";
-        badge.textContent = "Build";
-        badge.title = "Grok Build session";
-        btn.querySelector(".t-row").appendChild(badge);
-      }
-      if (s.grok_only) {
-        const badge = document.createElement("span");
-        badge.className = "src-badge grok-only";
-        badge.textContent = "Grok only";
-        badge.title = "No human turn — agent-to-agent prompt";
-        btn.querySelector(".t-row").appendChild(badge);
-      }
-      const meta = btn.querySelector(".m");
-      const count = (s.message_count || 0) + " msg";
-      const rel = relativeTime(s.updated_at);
-      meta.textContent = "";
-      const c = document.createElement("span");
-      c.textContent = count;
-      meta.appendChild(c);
-      if (rel) {
-        const dot = document.createElement("span");
-        dot.className = "dot";
-        dot.setAttribute("aria-hidden", "true");
-        meta.appendChild(dot);
-        const r = document.createElement("span");
-        r.textContent = rel;
-        meta.appendChild(r);
-      }
-      btn.onclick = () => openSession(s.id);
-      els.sessionList.appendChild(btn);
-    });
+    const recent = [];
+    const older = [];
+    sessions.forEach((s) => (isOlderSession(s) ? older : recent).push(s));
+    recent.forEach((s) => els.sessionList.appendChild(sessionRow(s)));
+    if (!older.length) return;
+    const activeIsOlder = older.some((s) => s.id === activeId);
+    const expanded = olderOpen || activeIsOlder;
+    const wrap = document.createElement("div");
+    wrap.className = "older-group";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "older-toggle";
+    toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+    toggle.setAttribute("aria-controls", "olderSessionList");
+    const n = older.length;
+    const label = "Older — " + n + " chat" + (n === 1 ? "" : "s");
+    toggle.innerHTML = '<span class="older-chevron" aria-hidden="true"></span><span class="older-label"></span>';
+    toggle.querySelector(".older-label").textContent = label;
+    const list = document.createElement("div");
+    list.id = "olderSessionList";
+    list.className = "older-list";
+    list.hidden = !expanded;
+    older.forEach((s) => list.appendChild(sessionRow(s)));
+    toggle.onclick = () => {
+      olderOpen = !expanded;
+      renderSessionList();
+    };
+    wrap.appendChild(toggle);
+    wrap.appendChild(list);
+    els.sessionList.appendChild(wrap);
   }
 
   async function openSession(id) {
