@@ -456,6 +456,22 @@
       const mid = data.message_id;
       if (mid && els.feed.querySelector('.msg[data-id="' + CSS.escape(mid) + '"]')) return;
       if (adoptOptimisticUser(data.content, mid)) return;
+      // Optimistic bubble may already carry a disk id from an early catchUp/merge.
+      // If the newest You line already shows this content, do not append a second bubble.
+      // Prefer keeping a real id over stamping build-live-*.
+      const userNodes = els.feed.querySelectorAll(".msg.user");
+      const lastUser = userNodes.length ? userNodes[userNodes.length - 1] : null;
+      if (lastUser) {
+        const body = lastUser.querySelector(".body");
+        const raw = body && (body.dataset.raw != null ? body.dataset.raw : body.textContent);
+        if (normalizeUserContent(raw || "") === normalizeUserContent(data.content || "")) {
+          const prevId = lastUser.dataset.id || "";
+          if (mid && (!prevId || prevId.indexOf("build-live-") === 0)) {
+            lastUser.dataset.id = mid;
+          }
+          return;
+        }
+      }
       const el = appendMsg("user", data.content);
       if (mid) el.dataset.id = mid;
       return;
@@ -561,30 +577,23 @@
     const want = normalizeUserContent(content);
     if (!want) return false;
     const nodes = els.feed.querySelectorAll(".msg.user");
-    // Prefer: no data-id (HTTP optimistic) > build-live-* (WS Build fan-out) > other.
-    // Within a rank, the last match wins so we retarget the newest bubble.
-    let best = null;
-    let bestRank = 0;
-    for (let i = 0; i < nodes.length; i++) {
+    // Newest-first: only retarget synthetic bubbles (no id or build-live-*).
+    // Never adopt an older real server id — caller should append a new You bubble.
+    for (let i = nodes.length - 1; i >= 0; i--) {
       const el = nodes[i];
       const body = el.querySelector(".body");
       const raw = body && (body.dataset.raw != null ? body.dataset.raw : body.textContent);
       if (normalizeUserContent(raw || "") !== want) continue;
       const id = el.dataset.id || "";
       if (messageId && id === messageId) return true;
-      let rank = 1;
-      if (!id) rank = 3;
-      else if (id.indexOf("build-live-") === 0) rank = 2;
-      if (rank >= bestRank) {
-        best = el;
-        bestRank = rank;
+      if (!id || id.indexOf("build-live-") === 0) {
+        if (messageId) el.dataset.id = messageId;
+        return true;
       }
+      // Newest content match is a real disk/server id — do not collapse.
+      return false;
     }
-    if (!best) return false;
-    // Only retarget synthetic/optimistic bubbles; never collapse two real server ids.
-    if (bestRank < 2) return false;
-    if (messageId) best.dataset.id = messageId;
-    return true;
+    return false;
   }
 
   function ensureStreaming() {
@@ -1358,6 +1367,9 @@
     setTurnActive(true);
     try {
       if (wsIsOpen()) {
+        // Optimistic You bubble (same as HTTP path). user_message / mergeTranscript
+        // adoptOptimisticUser stamps data-id or retargets build-live → disk id.
+        appendMsg("user", text);
         ws.send(JSON.stringify({ type: "chat.send", session_id: activeId, content: text }));
         els.input.value = "";
         autosize();
