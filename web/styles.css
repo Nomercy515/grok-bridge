@@ -455,6 +455,13 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   accent-color: var(--text);
   flex: 0 0 auto;
 }
+.opt-hint {
+  margin: -4px 0 0;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--muted-2);
+}
+.opt-hint[hidden] { display: none; }
 .switch {
   position: relative;
   width: 36px;

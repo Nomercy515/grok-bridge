@@ -11,6 +11,7 @@
   const DEMO = params.get("demo") === "1";
   const TOKEN_KEY = "grok_bridge_token";
   const GROK_ONLY_KEY = "grok_bridge_include_grok_only";
+  const PUSH_KEY = "grok_bridge_push_notifications";
   const LIVE_MS = 4000;
   const RECONNECT_BASE_MS = 1500;
   const RECONNECT_MAX_HIDDEN_MS = 30000;
@@ -36,12 +37,17 @@
     demoToggle: $("demoToggle"),
     btnRestart: $("btnRestart"),
     grokOnlyToggle: $("grokOnlyToggle"),
+    pushToggle: $("pushToggle"),
+    pushHint: $("pushHint"),
     btnJumpBottom: $("btnJumpBottom"),
   };
 
   let token = localStorage.getItem(TOKEN_KEY) || "";
   let sessions = [];
   let includeGrokOnly = localStorage.getItem(GROK_ONLY_KEY) === "1";
+  let pushEnabled = localStorage.getItem(PUSH_KEY) === "1";
+  const lastPushAt = Object.create(null);
+  let pushSwReg = null;
   let activeId = null;
   let ws = null;
   let streamingEl = null;
@@ -397,7 +403,7 @@
       reconnectDelay = RECONNECT_BASE_MS;
       if (els.btnRestart) els.btnRestart.disabled = false;
       refreshPollState();
-      if (activeId) subscribeSession(activeId);
+      resubscribeSessions();
       catchUp();
     };
     ws.onclose = () => {
@@ -444,6 +450,9 @@
     if (data.session_id && activeId && data.session_id !== activeId) {
       if (t === "assistant_start" || t === "assistant_delta" || t === "assistant_done") {
         markUnread(data.session_id);
+        if (t === "assistant_done") {
+          maybeNotifyReply(data.session_id, data.content || "", data);
+        }
         refreshSessions().catch(() => {});
       }
       return;
@@ -532,7 +541,10 @@
       streamingTools = null;
       setTurnActive(false);
       if (isLooking(activeId)) clearUnread(activeId);
-      else if (activeId) markUnread(activeId);
+      else if (activeId) {
+        markUnread(activeId);
+        maybeNotifyReply(activeId, data.content || "", data);
+      }
       refreshSessions().catch(() => {});
       catchUp();
       return;
@@ -1250,16 +1262,130 @@
     }
   }
 
+  function sessionTitleFor(id) {
+    const s = sessions.find((x) => x.id === id);
+    const t = s && String(s.title || "").trim();
+    return t || "Grok Bridge";
+  }
+
+  function previewReply(content) {
+    let text = String(content || "").replace(/\s+/g, " ").trim();
+    if (!text) return "New reply";
+    if (text.length > 140) text = text.slice(0, 137) + "…";
+    return text;
+  }
+
+  function showPushHint(msg) {
+    if (!els.pushHint) return;
+    els.pushHint.textContent = msg || "";
+    els.pushHint.hidden = !msg;
+  }
+
+  function syncPushToggle() {
+    if (!els.pushToggle) return;
+    els.pushToggle.checked = !!pushEnabled;
+    if (!pushEnabled) {
+      showPushHint("");
+      return;
+    }
+    if (!("Notification" in window)) {
+      showPushHint("Notifications are not supported in this browser.");
+    } else if (Notification.permission === "denied") {
+      showPushHint("Permission denied — enable notifications in the browser site settings, then re-enable.");
+    } else if (!window.isSecureContext) {
+      showPushHint("Notifications need HTTPS (or localhost). Open Bridge via your Tailscale HTTPS URL.");
+    } else {
+      showPushHint("");
+    }
+  }
+
+  async function registerPushServiceWorker() {
+    if (!("serviceWorker" in navigator) || !window.isSecureContext) return null;
+    try {
+      pushSwReg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+      return pushSwReg;
+    } catch (err) {
+      console.warn("push SW register failed", err);
+      return null;
+    }
+  }
+
+  function resubscribeSessions() {
+    if (!wsIsOpen()) return;
+    if (pushEnabled && sessions.length) {
+      sessions.forEach((s) => {
+        if (s && s.id) subscribeSession(s.id);
+      });
+    } else if (activeId) {
+      subscribeSession(activeId);
+    }
+  }
+
+  function maybeNotifyReply(sessionId, content, data) {
+    if (!pushEnabled || !sessionId) return;
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    if (data && (data.cancelled || data.error === "cancelled")) return;
+    // Still looking at this chat — no toast.
+    if (isLooking(sessionId)) return;
+    const now = Date.now();
+    if (lastPushAt[sessionId] && now - lastPushAt[sessionId] < 12000) return;
+    lastPushAt[sessionId] = now;
+    const title = sessionTitleFor(sessionId);
+    const body = previewReply(content);
+    const url = location.pathname + location.search + "#s=" + encodeURIComponent(sessionId);
+    const payload = {
+      type: "show-notification",
+      title,
+      body,
+      icon: "/logo-192.png",
+      badge: "/favicon-32.png",
+      tag: "grok-bridge-" + sessionId,
+      data: { sessionId, url },
+    };
+    const showViaPage = () => {
+      try {
+        const n = new Notification(title, {
+          body,
+          icon: "/logo-192.png",
+          tag: "grok-bridge-" + sessionId,
+          data: { sessionId, url },
+        });
+        n.onclick = () => {
+          try { window.focus(); } catch (_) {}
+          openSession(sessionId).catch(() => {});
+          try { n.close(); } catch (_) {}
+        };
+      } catch (err) {
+        console.warn("Notification failed", err);
+      }
+    };
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+      try {
+        navigator.serviceWorker.controller.postMessage(payload);
+        return;
+      } catch (_) {}
+    }
+    if (pushSwReg && pushSwReg.active) {
+      try {
+        pushSwReg.active.postMessage(payload);
+        return;
+      } catch (_) {}
+    }
+    showViaPage();
+  }
+
   function syncGrokOnlyToggle() {
     if (!els.grokOnlyToggle) return;
     els.grokOnlyToggle.checked = includeGrokOnly;
   }
+
 
   function setSettingsOpen(open) {
     if (!els.settingsModal || !els.btnSettings) return;
     els.settingsModal.hidden = !open;
     els.btnSettings.setAttribute("aria-expanded", open ? "true" : "false");
     if (open && els.demoToggle) els.demoToggle.checked = DEMO;
+    if (open) syncPushToggle();
   }
 
   function isLooking(id) {
@@ -1283,7 +1409,12 @@
       if (countsPrimed && prev != null && next > prev) {
         const recentSelf = selfSendAt[s.id] && (Date.now() - selfSendAt[s.id] < 8000) && next === prev + 1;
         if (isLooking(s.id)) clearUnread(s.id);
-        else if (!recentSelf) markUnread(s.id);
+        else if (!recentSelf) {
+          const wasUnread = unreadIds.has(s.id);
+          markUnread(s.id);
+          // Fallback when WS did not deliver assistant_done for this session.
+          if (!wasUnread) maybeNotifyReply(s.id, "", null);
+        }
       }
       seenCounts[s.id] = next;
     });
@@ -1307,7 +1438,9 @@
     sessions = data.sessions || [];
     noteSessionCounts(sessions);
     syncGrokOnlyToggle();
+    syncPushToggle();
     renderSessionList();
+    if (pushEnabled) resubscribeSessions();
   }
 
   function relativeTime(ts) {
@@ -1771,6 +1904,60 @@
     }
   });
 
+  if (els.pushToggle) {
+    syncPushToggle();
+    els.pushToggle.addEventListener("change", async () => {
+      const want = els.pushToggle.checked;
+      if (!want) {
+        pushEnabled = false;
+        localStorage.setItem(PUSH_KEY, "0");
+        showPushHint("");
+        syncPushToggle();
+        return;
+      }
+      if (!("Notification" in window)) {
+        els.pushToggle.checked = false;
+        pushEnabled = false;
+        localStorage.setItem(PUSH_KEY, "0");
+        showPushHint("Notifications are not supported in this browser.");
+        return;
+      }
+      if (!window.isSecureContext) {
+        els.pushToggle.checked = false;
+        pushEnabled = false;
+        localStorage.setItem(PUSH_KEY, "0");
+        showPushHint("Notifications need HTTPS (or localhost). Open Bridge via your Tailscale HTTPS URL.");
+        return;
+      }
+      let perm = Notification.permission;
+      if (perm === "default") {
+        try { perm = await Notification.requestPermission(); } catch (_) { perm = "denied"; }
+      }
+      if (perm !== "granted") {
+        els.pushToggle.checked = false;
+        pushEnabled = false;
+        localStorage.setItem(PUSH_KEY, "0");
+        showPushHint("Permission denied — enable notifications in the browser site settings, then re-enable.");
+        return;
+      }
+      pushEnabled = true;
+      localStorage.setItem(PUSH_KEY, "1");
+      showPushHint("");
+      await registerPushServiceWorker();
+      resubscribeSessions();
+      syncPushToggle();
+    });
+  }
+
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      const data = event.data || {};
+      if (data.type === "open-session" && data.sessionId) {
+        openSession(data.sessionId).catch(() => {});
+      }
+    });
+  }
+
   if (els.grokOnlyToggle) {
     syncGrokOnlyToggle();
     els.grokOnlyToggle.addEventListener("change", () => {
@@ -1779,6 +1966,7 @@
       refreshSessions().catch(() => {});
     });
   }
+
 
   if (els.demoToggle) {
     els.demoToggle.checked = DEMO;
@@ -1816,6 +2004,8 @@
     showInsecureBanner();
     await showEndpointBanner();
     await loadSessionOwner();
+    if (pushEnabled) await registerPushServiceWorker();
+    syncPushToggle();
     await ensurePaired(false);
     connectWs();
     await refreshSessions();
