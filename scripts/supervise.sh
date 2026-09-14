@@ -5,11 +5,43 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-HOST="${GROK_BRIDGE_HOST:-127.0.0.1}"
 PORT="${GROK_BRIDGE_PORT:-4020}"
 DATA="${GROK_BRIDGE_DATA:-$ROOT/data}"
 export GROK_BRIDGE_DATA="$DATA"
 mkdir -p "$DATA" bin
+
+# Load project env when present (brand / Grok home / secrets). Systemd
+# EnvironmentFile may already set these; we only fill blanks via set -a source
+# then re-assert DATA so endpoint snippets cannot clobber the data dir.
+if [[ -f "$DATA/grok-bridge.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$DATA/grok-bridge.env"
+  set +a
+fi
+export GROK_BRIDGE_DATA="$DATA"
+
+# Bind to Tailscale 100.x whenever available (stable node IP). Env/localhost are fallbacks only.
+resolve_host() {
+  local tip=""
+  if [[ -f "$DATA/grok-bridge.endpoint.env" ]]; then
+    tip="$(awk -F= '/^GROK_BRIDGE_TAILSCALE_IP=/{print $2; exit}' "$DATA/grok-bridge.endpoint.env")"
+  fi
+  if [[ -z "$tip" ]] && command -v tailscale >/dev/null 2>&1; then
+    tip="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
+  fi
+  if [[ -n "$tip" && "$tip" == 100.* ]]; then
+    printf '%s\n' "$tip"
+    return
+  fi
+  if [[ -n "${GROK_BRIDGE_HOST:-}" ]]; then
+    printf '%s\n' "$GROK_BRIDGE_HOST"
+    return
+  fi
+  printf '%s\n' "127.0.0.1"
+}
+HOST="$(resolve_host)"
+export GROK_BRIDGE_HOST="$HOST"
 
 SCHEME="http"
 SSL_ARGS=()
