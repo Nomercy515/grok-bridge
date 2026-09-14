@@ -559,17 +559,32 @@
 
   function adoptOptimisticUser(content, messageId) {
     const want = normalizeUserContent(content);
-    const nodes = els.feed.querySelectorAll(".msg.user:not([data-id])");
+    if (!want) return false;
+    const nodes = els.feed.querySelectorAll(".msg.user");
+    // Prefer: no data-id (HTTP optimistic) > build-live-* (WS Build fan-out) > other.
+    // Within a rank, the last match wins so we retarget the newest bubble.
+    let best = null;
+    let bestRank = 0;
     for (let i = 0; i < nodes.length; i++) {
       const el = nodes[i];
       const body = el.querySelector(".body");
       const raw = body && (body.dataset.raw != null ? body.dataset.raw : body.textContent);
-      if (normalizeUserContent(raw || "") === want) {
-        if (messageId) el.dataset.id = messageId;
-        return true;
+      if (normalizeUserContent(raw || "") !== want) continue;
+      const id = el.dataset.id || "";
+      if (messageId && id === messageId) return true;
+      let rank = 1;
+      if (!id) rank = 3;
+      else if (id.indexOf("build-live-") === 0) rank = 2;
+      if (rank >= bestRank) {
+        best = el;
+        bestRank = rank;
       }
     }
-    return false;
+    if (!best) return false;
+    // Only retarget synthetic/optimistic bubbles; never collapse two real server ids.
+    if (bestRank < 2) return false;
+    if (messageId) best.dataset.id = messageId;
+    return true;
   }
 
   function ensureStreaming() {
@@ -961,9 +976,31 @@
     );
     msgs.forEach((m) => {
       if (m.id && have.has(m.id)) return;
-      if (m.role === "user" && adoptOptimisticUser(m.content, m.id)) {
-        if (m.id) have.add(m.id);
-        return;
+      if (m.role === "user") {
+        if (adoptOptimisticUser(m.content, m.id)) {
+          if (m.id) have.add(m.id);
+          return;
+        }
+        // Consecutive identical user bubble with a different id (Build live vs disk).
+        const userNodes = els.feed.querySelectorAll(".msg.user");
+        const lastUser = userNodes.length ? userNodes[userNodes.length - 1] : null;
+        if (lastUser) {
+          const body = lastUser.querySelector(".body");
+          const raw = body && (body.dataset.raw != null ? body.dataset.raw : body.textContent);
+          if (normalizeUserContent(raw || "") === normalizeUserContent(m.content || "")) {
+            const prevId = lastUser.dataset.id || "";
+            if (prevId && prevId.indexOf("build-live-") !== 0 && prevId !== m.id) {
+              // Distinct real server messages with same text — keep both.
+            } else {
+              if (m.id) {
+                lastUser.dataset.id = m.id;
+                have.add(m.id);
+              }
+              if (prevId) have.delete(prevId);
+              return;
+            }
+          }
+        }
       }
       if (m.role === "assistant" && streamingEl && !streamingEl.dataset.id) {
         streamingEl.classList.remove("streaming");
