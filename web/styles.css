@@ -741,6 +741,24 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .msg.user .body strong {
   color: #ffffff;
 }
+.msg .body .msg-h1,
+.msg .body .msg-h2 {
+  display: inline;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #fafafa;
+  line-height: 1.35;
+}
+.msg .body .msg-h1 {
+  font-size: 1.32em;
+}
+.msg .body .msg-h2 {
+  font-size: 1.2em;
+}
+.msg.user .body .msg-h1,
+.msg.user .body .msg-h2 {
+  color: #ffffff;
+}
 .msg .body .sys-reminder {
   display: block;
   margin: 10px 0;
