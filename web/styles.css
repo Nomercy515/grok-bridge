@@ -292,10 +292,36 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
   border-color: #6366f1;
   background: rgba(99, 102, 241, 0.12);
 }
-.src-badge.grok-only {
-  color: #d4d4d8;
-  border-color: #52525b;
-  background: rgba(255, 255, 255, 0.04);
+.src-badge.grok-only,
+.src-badge.subagent {
+  color: #fde68a;
+  border-color: #ca8a04;
+  background: rgba(202, 138, 4, 0.16);
+}
+.src-badge.subagent.fork {
+  color: #fcd34d;
+  border-color: #a16207;
+  background: rgba(161, 98, 7, 0.18);
+}
+.parent-jump {
+  flex: 0 0 auto;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border, #3f3f46);
+  color: #a5b4fc;
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.1);
+  cursor: pointer;
+  line-height: 1.4;
+}
+.parent-jump:hover,
+.parent-jump:focus-visible {
+  background: rgba(99, 102, 241, 0.22);
+  outline: none;
 }
 
 .older-group {
