@@ -73,16 +73,13 @@
     try {
       const u = new URL(String(raw || ""));
       const host = u.hostname;
-      const localHttp =
-        u.protocol === "http:" && (host === "localhost" || host === "127.0.0.1");
-      const httpsOk = u.protocol === "https:";
-      if (!httpsOk && !localHttp) return null;
-      const okHost =
-        host === "localhost" ||
-        host === "127.0.0.1" ||
-        /^100\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host) ||
-        /\.ts\.net$/i.test(host);
+      const isLocal = host === "localhost" || host === "127.0.0.1";
+      const isTailscale =
+        /^100\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host) || /\.ts\.net$/i.test(host);
+      const okHost = isLocal || isTailscale;
       if (!okHost) return null;
+      // http is valid for Tailscale when hub has no TLS; https always ok for allowlisted hosts.
+      if (u.protocol !== "https:" && u.protocol !== "http:") return null;
       return u;
     } catch (_) {
       return null;
