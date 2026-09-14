@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -41,6 +42,7 @@ func main() {
 	if root == "" {
 		root = sessions.DefaultDataDir()
 	}
+	loadProjectEnv(root)
 	store, err := sessions.NewStore(root)
 	if err != nil {
 		log.Fatalf("data dir: %v", err)
@@ -109,6 +111,33 @@ func main() {
 	handler := srv.Handler()
 	if err := hub.ListenAndServe(addr, handler, tlsCfg); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("serve: %v", err)
+	}
+}
+
+
+// loadProjectEnv applies KEY=VAL from data/grok-bridge.env when the key is unset.
+// Lets GROK_BRIDGE_USER_NAME / GROK_BRIDGE_GROK_HOME take effect on
+// restart.requested even if systemd still runs the unit as root.
+func loadProjectEnv(dataDir string) {
+	b, err := os.ReadFile(filepath.Join(dataDir, "grok-bridge.env"))
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if k == "" || os.Getenv(k) != "" {
+			continue
+		}
+		_ = os.Setenv(k, v)
 	}
 }
 

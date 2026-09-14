@@ -235,6 +235,35 @@ if [[ "$SKIP_SYSTEMD" != "1" ]] && command -v systemctl >/dev/null 2>&1; then
 fi
 
 # --- 6–7. systemd units ---
+# Run as repo owner (not root) so HostUserLabel / GrokHome match the human account.
+SERVICE_USER="${GROK_BRIDGE_SERVICE_USER:-}"
+if [[ -z "$SERVICE_USER" ]]; then
+  SERVICE_USER="$(stat -c '%U' "$ROOT" 2>/dev/null || true)"
+fi
+if [[ -z "$SERVICE_USER" || "$SERVICE_USER" == "root" ]]; then
+  SERVICE_USER="${SUDO_USER:-$(id -un)}"
+fi
+SERVICE_GROUP="$(id -gn "$SERVICE_USER" 2>/dev/null || echo "$SERVICE_USER")"
+SERVICE_HOME="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
+SERVICE_HOME="${SERVICE_HOME:-/home/$SERVICE_USER}"
+GROK_HOME_DIR="${GROK_BRIDGE_GROK_HOME:-$SERVICE_HOME/.grok}"
+if ! grep -q '^GROK_BRIDGE_GROK_HOME=' "$ENV_FILE_PROJECT" 2>/dev/null; then
+  echo "GROK_BRIDGE_GROK_HOME=${GROK_HOME_DIR}" >> "$ENV_FILE_PROJECT"
+fi
+if ! grep -q '^GROK_BRIDGE_USER_NAME=' "$ENV_FILE_PROJECT" 2>/dev/null; then
+  _gecos="$(getent passwd "$SERVICE_USER" | cut -d: -f5 | cut -d, -f1 | xargs 2>/dev/null || true)"
+  _display="${_gecos:-$SERVICE_USER}"
+  if [[ "$SERVICE_USER" == "eti_enne1" && -z "${_gecos:-}" ]]; then
+    _display="Étienne"
+  fi
+  echo "GROK_BRIDGE_USER_NAME=${_display}" >> "$ENV_FILE_PROJECT"
+fi
+if [[ -f "$ENV_FILE_SYSTEM" ]]; then
+  run_priv cp "$ENV_FILE_PROJECT" "$ENV_FILE_SYSTEM"
+  run_priv chmod 600 "$ENV_FILE_SYSTEM" || true
+fi
+info "systemd service user: $SERVICE_USER (GROK_HOME=$GROK_HOME_DIR)"
+
 install_unit_from_template() {
   local template="$1" dest_name="$2"
   local tmp
@@ -244,6 +273,10 @@ install_unit_from_template() {
     -e "s|__ENV_FILE__|${ENV_FILE_FOR_UNIT}|g" \
     -e "s|__DATA__|${DATA_DIR}|g" \
     -e "s|__PORT__|${PORT}|g" \
+    -e "s|__USER__|${SERVICE_USER}|g" \
+    -e "s|__GROUP__|${SERVICE_GROUP}|g" \
+    -e "s|__HOME__|${SERVICE_HOME}|g" \
+    -e "s|__GROK_HOME__|${GROK_HOME_DIR}|g" \
     "$template" > "$tmp"
   run_priv cp "$tmp" "/etc/systemd/system/${dest_name}"
   rm -f "$tmp"

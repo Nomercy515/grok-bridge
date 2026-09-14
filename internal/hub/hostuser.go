@@ -12,13 +12,25 @@ func HostUserLabel() string {
 	if v := strings.TrimSpace(os.Getenv("GROK_BRIDGE_USER_NAME")); v != "" {
 		return v
 	}
+	if v := strings.TrimSpace(os.Getenv("GROK_BRIDGE_SERVICE_USER")); v != "" {
+		return labelFromAccount(v, "")
+	}
 	u, err := user.Current()
 	if err != nil {
 		return ""
 	}
-	name := strings.TrimSpace(u.Name)
 	login := stripLogin(u.Username)
-	if name != "" && !strings.EqualFold(name, u.Username) && !strings.EqualFold(name, login) {
+	// skip root login label — never show "root's sessions list"
+	if login == "root" || strings.EqualFold(u.Username, "root") {
+		return ""
+	}
+	return labelFromAccount(u.Username, u.Name)
+}
+
+func labelFromAccount(username, gecos string) string {
+	login := stripLogin(username)
+	name := strings.TrimSpace(gecos)
+	if name != "" && !strings.EqualFold(name, username) && !strings.EqualFold(name, login) {
 		if fields := strings.Fields(name); len(fields) > 0 && fields[0] != "" {
 			return fields[0]
 		}
