@@ -756,7 +756,7 @@
 
       box.appendChild(card);
     });
-    if (nearBottom()) scrollFeed();
+    if (!suppressAutoScroll && nearBottom()) scrollFeed();
     else updateJumpBottom();
   }
 
@@ -866,8 +866,10 @@
     return role;
   }
 
+  let suppressAutoScroll = false;
+
   function appendMsg(role, content, streaming) {
-    const follow = nearBottom();
+    const follow = !suppressAutoScroll && nearBottom();
     clearEmpty();
     const safeRole = safeMsgRole(role);
     const div = document.createElement("div");
@@ -891,9 +893,26 @@
     if (e) e.remove();
   }
 
-  function scrollFeed() {
-    els.feed.scrollTop = els.feed.scrollHeight;
+  /** Scroll feed to bottom. Use { instant: true } on session open so CSS
+   * scroll-behavior:smooth does not animate from the top of the transcript. */
+  function scrollFeed(opts) {
+    const instant = !!(opts && opts.instant);
+    const feed = els.feed;
+    if (instant) {
+      feed.style.scrollBehavior = "auto";
+      feed.scrollTop = feed.scrollHeight;
+      updateJumpBottom();
+      requestAnimationFrame(() => {
+        feed.style.scrollBehavior = "";
+      });
+      return;
+    }
+    feed.scrollTop = feed.scrollHeight;
     updateJumpBottom();
+  }
+
+  function pinFeedToBottom() {
+    scrollFeed({ instant: true });
   }
 
   function nearBottom() {
@@ -956,13 +975,20 @@
       updateJumpBottom();
       return;
     }
-    msgs.forEach((m) => {
-      const el = appendMsg(m.role, m.content || "", false);
-      if (m.id) el.dataset.id = m.id;
-      if (m.tools && m.tools.length) renderTools(el, m.tools);
-      if (m.cancelled) markCancelled(el);
-    });
-    scrollFeed();
+    // Bulk-render without per-message follow scrolls, then pin instantly so the
+    // first paint is already at the latest message (no smooth scroll from top).
+    suppressAutoScroll = true;
+    try {
+      msgs.forEach((m) => {
+        const el = appendMsg(m.role, m.content || "", false);
+        if (m.id) el.dataset.id = m.id;
+        if (m.tools && m.tools.length) renderTools(el, m.tools);
+        if (m.cancelled) markCancelled(el);
+      });
+    } finally {
+      suppressAutoScroll = false;
+    }
+    pinFeedToBottom();
   }
 
   /** Merge server transcript into the feed without wiping scroll awkwardly. */
