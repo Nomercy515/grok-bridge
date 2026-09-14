@@ -511,6 +511,10 @@
       if (streamingEl) {
         streamingEl.classList.remove("streaming");
         if (data.content) setMsgBody(streamingEl, data.content);
+        // Synthetic id until catchUp/snapshot stamps the disk id (dedupe path).
+        if (!streamingEl.dataset.id) {
+          streamingEl.dataset.id = "build-live-asst-" + Date.now().toString(36);
+        }
         if (data.cancelled || data.error === "cancelled") markCancelled(streamingEl);
         if (data.error && data.error !== "cancelled") {
           const note = document.createElement("div");
@@ -601,6 +605,51 @@
         return true;
       }
       // Newest content match is a real disk/server id — do not collapse.
+      return false;
+    }
+    return false;
+  }
+
+  function normalizeAssistantContent(raw) {
+    return String(raw == null ? "" : raw).trim();
+  }
+
+  /**
+   * Adopt a live/streaming assistant bubble into a disk/server message id.
+   * After assistant_done, streamingEl is cleared but the bubble often has no
+   * data-id yet — catchUp / session.snapshot must not append a second Grok line
+   * with the same text (common when tools/sources rendered under the live turn).
+   * Skip .grok-thoughts-msg scaffolding cards (also classed as assistant).
+   */
+  function adoptLiveAssistant(content, messageId, tools) {
+    const want = normalizeAssistantContent(content);
+    if (!want) return false;
+    if (streamingEl && !streamingEl.dataset.id) {
+      streamingEl.classList.remove("streaming");
+      setMsgBody(streamingEl, content || "");
+      if (messageId) streamingEl.dataset.id = messageId;
+      if (tools && tools.length) renderTools(streamingEl, tools);
+      streamingEl = null;
+      streamingTools = null;
+      return true;
+    }
+    const nodes = els.feed.querySelectorAll(".msg.assistant:not(.grok-thoughts-msg)");
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const el = nodes[i];
+      const body = el.querySelector(".body");
+      const raw = body && (body.dataset.raw != null ? body.dataset.raw : body.textContent);
+      if (normalizeAssistantContent(raw || "") !== want) continue;
+      const id = el.dataset.id || "";
+      if (messageId && id === messageId) {
+        if (tools && tools.length) renderTools(el, tools);
+        return true;
+      }
+      if (!id || id.indexOf("build-live-") === 0) {
+        if (messageId) el.dataset.id = messageId;
+        if (tools && tools.length) renderTools(el, tools);
+        return true;
+      }
+      // Newest content match is a real server id — do not collapse.
       return false;
     }
     return false;
@@ -1167,15 +1216,13 @@
           }
         }
       }
-      if (m.role === "assistant" && streamingEl && !streamingEl.dataset.id) {
-        streamingEl.classList.remove("streaming");
-        setMsgBody(streamingEl, m.content || "");
-        if (m.id) streamingEl.dataset.id = m.id;
-        if (m.tools && m.tools.length) renderTools(streamingEl, m.tools);
-        streamingEl = null;
-        streamingTools = null;
-        if (m.id) have.add(m.id);
-        return;
+      if (m.role === "assistant") {
+        // Live stream still open, or finished bubble with no/synthetic id after
+        // assistant_done + catchUp/snapshot (same class of bug as You-bubble dedupe).
+        if (adoptLiveAssistant(m.content, m.id, m.tools)) {
+          if (m.id) have.add(m.id);
+          return;
+        }
       }
       const el = appendMsg(m.role, m.content || "", false);
       if (m.id) {
