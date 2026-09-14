@@ -104,6 +104,9 @@ type SessionSummary struct {
 	// GrokOnly marks a Build session with no human turn (subagent / agent-only).
 	// Omitted from the default list; set when ?include=grok-only is requested.
 	GrokOnly bool `json:"grok_only,omitempty"`
+	// From on-disk summary.json when present (Build subagent / fork metadata).
+	SessionKind     string `json:"session_kind,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
 }
 
 func (s *Store) ListSessions() []SessionSummary {

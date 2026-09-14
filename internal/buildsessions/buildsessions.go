@@ -71,6 +71,13 @@ func listSessions(includeGrokOnly bool) []sessions.SessionSummary {
 		if grokOnly {
 			sum.GrokOnly = true
 		}
+		if kind := strings.TrimSpace(raw.SessionKind); kind != "" {
+			sum.SessionKind = kind
+		}
+		if parent := strings.TrimSpace(raw.ParentSessionID); parent != "" {
+			// Expose as build:<id> so the UI can openSession the same way as list rows.
+			sum.ParentSessionID = WithPrefix(parent)
+		}
 		out = append(out, sum)
 		return nil
 	})

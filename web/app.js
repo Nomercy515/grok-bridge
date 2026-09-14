@@ -1132,7 +1132,7 @@
       btn.appendChild(dot);
     }
     btn.querySelector(".t").textContent = s.title || "Untitled";
-    if (build) {
+    if (build && !s.grok_only) {
       const badge = document.createElement("span");
       badge.className = "src-badge build";
       badge.textContent = "Build";
@@ -1141,10 +1141,35 @@
     }
     if (s.grok_only) {
       const badge = document.createElement("span");
-      badge.className = "src-badge grok-only";
-      badge.textContent = "Grok only";
-      badge.title = "No human turn — agent-to-agent prompt";
+      const kind = String(s.session_kind || "").toLowerCase();
+      const isFork = kind === "fork" || kind.indexOf("fork") !== -1;
+      badge.className = "src-badge subagent" + (isFork ? " fork" : "");
+      badge.textContent = isFork ? "Subagent fork" : "Subagent";
+      badge.title = isFork
+        ? "Subagent fork — agent-to-agent child session"
+        : "Subagent — agent-to-agent child session";
       btn.querySelector(".t-row").appendChild(badge);
+    }
+    if (s.parent_session_id) {
+      const parentId = String(s.parent_session_id).indexOf("build:") === 0
+        ? String(s.parent_session_id)
+        : "build:" + String(s.parent_session_id);
+      const parentJump = document.createElement("span");
+      parentJump.className = "parent-jump";
+      parentJump.textContent = "Parent";
+      parentJump.title = "Open parent Build chat";
+      parentJump.setAttribute("role", "link");
+      parentJump.tabIndex = 0;
+      const goParent = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openSession(parentId);
+      };
+      parentJump.addEventListener("click", goParent);
+      parentJump.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") goParent(e);
+      });
+      btn.querySelector(".t-row").appendChild(parentJump);
     }
     const meta = btn.querySelector(".m");
     const count = (s.message_count || 0) + " msg";
