@@ -455,6 +455,16 @@
     if (t === "user_message") {
       const mid = data.message_id;
       if (mid && els.feed.querySelector('.msg[data-id="' + CSS.escape(mid) + '"]')) return;
+      if (isGrokScaffolding(data.content || "")) {
+        const existingScaf = findScaffoldingMsgByContent(data.content || "");
+        if (existingScaf) {
+          if (mid) existingScaf.dataset.id = mid;
+          return;
+        }
+        const elScaf = appendMsg("user", data.content);
+        if (mid) elScaf.dataset.id = mid;
+        return;
+      }
       if (adoptOptimisticUser(data.content, mid)) return;
       // Optimistic bubble may already carry a disk id from an early catchUp/merge.
       // If the newest You line already shows this content, do not append a second bubble.
@@ -798,6 +808,94 @@
     );
   }
 
+
+  /** Known Grok Build context-injection wrapper tags (UI presentation only). */
+  var GROK_SCAFFOLD_TAGS = [
+    "user_info",
+    "git_status",
+    "rules",
+    "user_rules",
+    "agent_skills",
+    "system_reminder",
+    "system-reminder",
+    "open_and_recently_viewed_files",
+    "agent_transcripts",
+    "mcp_file_system",
+    "attached_files",
+    "browser_content"
+  ];
+
+  /**
+   * Conservative heuristic: treat content as Grok Build scaffolding when it
+   * starts with a known wrapper tag and is primarily those blocks — not a
+   * normal human message that merely mentions a tag name in prose.
+   * Messages containing <user_query> are real user turns (unwrap path).
+   */
+  function isGrokScaffolding(raw) {
+    const s = String(raw == null ? "" : raw).trim();
+    if (s.length < 12) return false;
+    if (/<user_query[\s>]/i.test(s)) return false;
+    const names = GROK_SCAFFOLD_TAGS.join("|");
+    if (!new RegExp("^<(" + names + ")(\\s[^>]*)?>", "i").test(s)) return false;
+    let stripped = s;
+    for (let i = 0; i < GROK_SCAFFOLD_TAGS.length; i++) {
+      const name = GROK_SCAFFOLD_TAGS[i];
+      const block = new RegExp(
+        "<" + name + "(?:\\s[^>]*)?>[\\s\\S]*?<\\/" + name + ">",
+        "gi"
+      );
+      stripped = stripped.replace(block, "\n");
+      stripped = stripped.replace(
+        new RegExp("<\\/?" + name + "(?:\\s[^>]*)?>", "gi"),
+        "\n"
+      );
+    }
+    const leftover = stripped.replace(/\s+/g, " ").trim();
+    // Mostly tag-wrapped, or only trivial leftovers outside blocks.
+    return leftover.length < 80;
+  }
+
+  /** Collapsible card: summary "Grok thoughts", body = escaped original. */
+  function formatGrokThoughtsHTML(raw) {
+    const escaped = escapeHtml(raw == null ? "" : String(raw));
+    return (
+      '<details class="grok-thoughts">' +
+      '<summary class="grok-thoughts-summary">Grok thoughts</summary>' +
+      '<pre class="grok-thoughts-body">' +
+      escaped +
+      "</pre></details>"
+    );
+  }
+
+  /** Restyle an existing .msg bubble as Grok-attributed scaffolding. */
+  function presentAsGrokThoughts(msgEl) {
+    if (!msgEl || !msgEl.classList) return;
+    if (!msgEl.dataset.origRole) {
+      if (msgEl.classList.contains("user")) msgEl.dataset.origRole = "user";
+      else if (msgEl.classList.contains("system")) msgEl.dataset.origRole = "system";
+      else if (msgEl.classList.contains("assistant")) msgEl.dataset.origRole = "assistant";
+    }
+    msgEl.classList.remove("user", "system", "unknown");
+    msgEl.classList.add("assistant", "grok-thoughts-msg");
+    msgEl.dataset.scaffolding = "1";
+    const roleEl = msgEl.querySelector(".role");
+    if (roleEl) roleEl.textContent = "Grok";
+  }
+
+  function findScaffoldingMsgByContent(content) {
+    const want = String(content == null ? "" : content).trim();
+    if (!want) return null;
+    const nodes = els.feed.querySelectorAll(".msg.grok-thoughts-msg");
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const body = nodes[i].querySelector(".body");
+      const raw =
+        body && (body.dataset.raw != null ? body.dataset.raw : body.textContent);
+      if (String(raw || "").trim() === want) return nodes[i];
+    }
+    return null;
+  }
+
+
   /** Escaped text → ATX headers, then bold. Tiny md subset only. */
   function formatMdSubset(escaped) {
     return formatBold(formatAtxHeaders(escaped));
@@ -850,6 +948,12 @@
     if (!body) return;
     const text = raw == null ? "" : String(raw);
     body.dataset.raw = text;
+    if (isGrokScaffolding(text)) {
+      body.innerHTML = formatGrokThoughtsHTML(text);
+      const msg = body.closest ? body.closest(".msg") : null;
+      if (msg) presentAsGrokThoughts(msg);
+      return;
+    }
     body.innerHTML = formatMessageHTML(text);
   }
 
@@ -872,14 +976,30 @@
     const follow = !suppressAutoScroll && nearBottom();
     clearEmpty();
     const safeRole = safeMsgRole(role);
+    const text = content || "";
+    const scaffolding = !streaming && isGrokScaffolding(text);
+    const displayRole = scaffolding ? "assistant" : safeRole;
     const div = document.createElement("div");
-    div.className = "msg " + safeRole + (streaming ? " streaming" : "");
+    div.className =
+      "msg " +
+      displayRole +
+      (scaffolding ? " grok-thoughts-msg" : "") +
+      (streaming ? " streaming" : "");
+    if (scaffolding) {
+      div.dataset.scaffolding = "1";
+      div.dataset.origRole = safeRole;
+    }
     const roleEl = document.createElement("div");
     roleEl.className = "role";
-    roleEl.textContent = roleLabel(safeRole);
+    roleEl.textContent = scaffolding ? "Grok" : roleLabel(safeRole);
     const bodyEl = document.createElement("div");
     bodyEl.className = "body";
-    setMsgBody(bodyEl, content || "");
+    if (scaffolding) {
+      bodyEl.dataset.raw = text;
+      bodyEl.innerHTML = formatGrokThoughtsHTML(text);
+    } else {
+      setMsgBody(bodyEl, text);
+    }
     div.appendChild(roleEl);
     div.appendChild(bodyEl);
     els.feed.appendChild(div);
@@ -1012,6 +1132,16 @@
     msgs.forEach((m) => {
       if (m.id && have.has(m.id)) return;
       if (m.role === "user") {
+        if (isGrokScaffolding(m.content || "")) {
+          const existingScaf = findScaffoldingMsgByContent(m.content || "");
+          if (existingScaf) {
+            if (m.id) {
+              existingScaf.dataset.id = m.id;
+              have.add(m.id);
+            }
+            return;
+          }
+        }
         if (adoptOptimisticUser(m.content, m.id)) {
           if (m.id) have.add(m.id);
           return;
