@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Boot-time / on-demand Tailscale endpoint refresh for Grok Bridge.
 #
-# Waits for Tailscale (MagicDNS + 100.x), writes data/endpoint.json, and
-# regenerates TLS certs with those SANs so phone bookmarks survive host DHCP churn.
-# Tailscale-specific only — does not discover LAN/DHCP addresses.
+# Waits for Tailscale (MagicDNS + 100.x), writes data/endpoint.json with a
+# phone URL whose scheme matches hub SSL config, and optionally regenerates
+# TLS certs with those SANs so phone bookmarks survive host DHCP churn.
+# Tailscale-specific only - does not discover LAN/DHCP addresses.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DATA="${GROK_BRIDGE_DATA:-$ROOT/data}"
@@ -18,7 +19,7 @@ usage() {
   cat <<USAGE
 Usage: $0 [--no-regen-certs] [--no-wait] [--wait-secs N] [--port N] [--print-only]
   Waits for Tailscale MagicDNS/IPv4, writes \$DATA/endpoint.json, regenerates certs.
-  Canonical phone URL = https://<MagicDNS>:\$PORT/ (fallback: Tailscale 100.x).
+  Canonical phone URL = http|https://<MagicDNS>:\$PORT/ (scheme matches hub SSL config).
 USAGE
 }
 
@@ -87,29 +88,46 @@ else
   fi
 fi
 
+# Scheme must match what the hub actually listens with (supervise.sh / start.sh).
+# Prefer http unless SSL cert+key are configured and present — do not advertise https
+# when the hub is HTTP-only (phone bookmarks would break).
+if [[ -f "$DATA/grok-bridge.env" ]]; then
+  # shellcheck disable=SC1091
+  set -a
+  source "$DATA/grok-bridge.env"
+  set +a
+fi
+SCHEME="http"
+SSL_CERT="${GROK_BRIDGE_SSL_CERT:-}"
+SSL_KEY="${GROK_BRIDGE_SSL_KEY:-}"
+if [[ -n "$SSL_CERT" && -n "$SSL_KEY" && -f "$SSL_CERT" && -f "$SSL_KEY" ]]; then
+  SCHEME="https"
+fi
+
 if [[ -n "$TS_DNS" ]]; then
   CANONICAL_HOST="$TS_DNS"
 else
   CANONICAL_HOST="$TS_IP"
 fi
-URL="https://${CANONICAL_HOST}:${PORT}/"
-URL_IP="https://${TS_IP}:${PORT}/"
+URL="${SCHEME}://${CANONICAL_HOST}:${PORT}/"
+URL_IP="${SCHEME}://${TS_IP}:${PORT}/"
 
 ENDPOINT_JSON="$DATA/endpoint.json"
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-python3 - "$ENDPOINT_JSON" "$TS_IP" "$TS_DNS" "$PORT" "$URL" "$URL_IP" "$NOW" <<'PY'
+python3 - "$ENDPOINT_JSON" "$TS_IP" "$TS_DNS" "$PORT" "$URL" "$URL_IP" "$NOW" "$SCHEME" <<'ENDPY'
 import json, sys, os
-path, ts_ip, ts_dns, port, url, url_ip, now = sys.argv[1:]
+path, ts_ip, ts_dns, port, url, url_ip, now, scheme = sys.argv[1:]
 doc = {
     "source": "tailscale",
     "tailscale_ipv4": ts_ip or None,
     "magicdns": ts_dns or None,
     "port": int(port),
+    "scheme": scheme,
     "url": url,
     "url_ip": url_ip,
     "updated_at": now,
-    "note": "Canonical phone bookmark = url (MagicDNS when available). Host LAN DHCP is ignored.",
+    "note": "Canonical phone bookmark = url (MagicDNS when available). Scheme matches hub SSL. Host LAN DHCP is ignored.",
 }
 tmp = path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as f:
@@ -117,11 +135,12 @@ with open(tmp, "w", encoding="utf-8") as f:
     f.write("\n")
 os.replace(tmp, path)
 print(f"Wrote {path}")
-PY
+ENDPY
 
 echo "=== Grok Bridge Tailscale endpoint ==="
 echo "  MagicDNS       : ${TS_DNS:-"(none — enable MagicDNS in tailnet DNS settings)"}"
 echo "  Tailscale IPv4 : $TS_IP"
+echo "  Scheme         : $SCHEME (https only if GROK_BRIDGE_SSL_CERT/KEY set)"
 echo "  Canonical URL  : $URL"
 echo "  (bookmark MagicDNS; do not use eth0/DHCP LAN IP)"
 echo ""
