@@ -31,6 +31,8 @@
     btnMenu: $("btnMenu"),
     ctxMeter: $("ctxMeter"),
     ctxSub: $("ctxSub"),
+    usageMeter: $("usageMeter"),
+    usageSub: $("usageSub"),
     modeBadge: $("modeBadge"),
     btnSettings: $("btnSettings"),
     settingsModal: $("settingsModal"),
@@ -270,6 +272,85 @@
     const k = v / 1000;
     if (k < 10) return (Math.round(k * 10) / 10) + "k";
     return Math.round(k) + "k";
+  }
+
+
+  function formatResetLocal(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const now = new Date();
+    const opts = { hour: "numeric", minute: "2-digit" };
+    const sameDay = d.toDateString() === now.toDateString();
+    if (!sameDay) {
+      opts.weekday = "short";
+      opts.month = "short";
+      opts.day = "numeric";
+    }
+    try {
+      return d.toLocaleString(undefined, opts);
+    } catch (e) {
+      return d.toLocaleString();
+    }
+  }
+
+  function clearUsageMeter() {
+    if (!els.usageMeter) return;
+    els.usageMeter.textContent = "—";
+    els.usageMeter.title = "SuperGrok weekly usage unknown";
+    els.usageMeter.classList.add("empty");
+    els.usageMeter.classList.remove("warn");
+    const wrap = els.usageMeter.closest(".usage-wrap");
+    if (wrap) wrap.classList.remove("warn");
+    if (els.usageSub) {
+      els.usageSub.textContent = "weekly";
+      els.usageSub.hidden = false;
+    }
+  }
+
+  function updateUsageMeter(u) {
+    if (!els.usageMeter) return;
+    if (!u) {
+      clearUsageMeter();
+      return;
+    }
+    const wrap = els.usageMeter.closest(".usage-wrap");
+    const used = u.used_percent;
+    const rem = u.remaining_percent;
+    const resetLabel = formatResetLocal(u.reset_at);
+    const atLimit = !!u.at_limit || (rem != null && Number(rem) <= 0.05);
+    const known = u.available && used != null && Number.isFinite(Number(used));
+    els.usageMeter.classList.remove("empty");
+    if (wrap) wrap.classList.toggle("warn", atLimit);
+    els.usageMeter.classList.toggle("warn", atLimit);
+
+    let main = "—";
+    if (known) {
+      const pct = Math.round(Number(used));
+      main = pct + "%";
+    } else if (atLimit) {
+      main = "limit";
+    } else {
+      main = "—";
+      els.usageMeter.classList.add("empty");
+    }
+    els.usageMeter.textContent = main;
+
+    let sub = "weekly";
+    if (resetLabel) sub = "resets " + resetLabel;
+    else if (!known) sub = "usage unknown";
+    if (els.usageSub) {
+      els.usageSub.hidden = false;
+      els.usageSub.textContent = sub;
+    }
+
+    const bits = ["SuperGrok / Build weekly pool"];
+    if (known) bits.push("used " + Math.round(Number(used)) + "%");
+    else bits.push("usage unknown");
+    if (resetLabel) bits.push("resets " + resetLabel + " (local time)");
+    if (u.source) bits.push("source: " + u.source);
+    if (u.reason) bits.push(u.reason);
+    els.usageMeter.title = bits.join(" · ");
   }
 
   function clearCtxMeter() {
@@ -1436,6 +1517,7 @@
     const res = await api("/api/sessions" + q);
     const data = await res.json();
     sessions = data.sessions || [];
+    if (data.usage) updateUsageMeter(data.usage);
     noteSessionCounts(sessions);
     syncGrokOnlyToggle();
     syncPushToggle();

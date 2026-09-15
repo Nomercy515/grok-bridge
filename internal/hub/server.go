@@ -27,6 +27,7 @@ import (
 	"grok-bridge/internal/buildsessions"
 	"grok-bridge/internal/endpoint"
 	"grok-bridge/internal/grokacp"
+	"grok-bridge/internal/grokusage"
 	"grok-bridge/internal/restart"
 	"grok-bridge/internal/sessions"
 )
@@ -121,6 +122,7 @@ type Server struct {
 	WebFS        fs.FS
 	Mux          *http.ServeMux
 	ACP          *grokacp.Manager
+	Usage        *grokusage.Cache
 	turnsMu      sync.Mutex
 	turns        map[string]context.CancelFunc // sessionID -> cancel active turn
 	buildRawMu   sync.Mutex
@@ -193,6 +195,7 @@ func NewServer(opts Options) (*Server, error) {
 		WebFS:        opts.WebFS,
 		Mux:          http.NewServeMux(),
 		ACP:          acpMgr,
+		Usage:        grokusage.NewCache(),
 		turns:        make(map[string]context.CancelFunc),
 		buildRaw:     make(map[string]string),
 		createdBuild: make(map[string]*sessions.Session),
@@ -336,6 +339,7 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/auth/pair", s.handlePair)
 	s.Mux.HandleFunc("/api/auth/rotate", s.handleRotate)
 	s.Mux.HandleFunc("/api/auth/rotate-pairing", s.handleRotatePairing)
+	s.Mux.HandleFunc("/api/usage", s.handleUsage)
 	s.Mux.HandleFunc("/api/sessions", s.handleSessions)
 	s.Mux.HandleFunc("/api/sessions/", s.handleSessionByID)
 	s.Mux.HandleFunc("/api/control/restart", s.handleRestart)
@@ -388,10 +392,27 @@ func (s *Server) handleRotatePairing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "pairing_code": code})
 }
 
+
+func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	if s.Usage == nil {
+		writeJSON(w, 200, grokusage.Snapshot{Available: false, Source: "none", Reason: "usage cache not configured"})
+		return
+	}
+	writeJSON(w, 200, s.Usage.Snapshot(r.Context()))
+}
+
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, 200, map[string]any{"sessions": s.listMergedSessions(r)})
+		body := map[string]any{"sessions": s.listMergedSessions(r)}
+		if s.Usage != nil {
+			body["usage"] = s.Usage.Snapshot(r.Context())
+		}
+		writeJSON(w, 200, body)
 	case http.MethodPost:
 		body := readJSON(r)
 		title, _ := body["title"].(string)
@@ -833,6 +854,9 @@ func (s *Server) runChat(parent context.Context, sessionID, content string, onUs
 			if c, ok := event["content"].(string); ok && c != "" {
 				fullText = c
 			}
+			if errStr, ok := event["error"].(string); ok && errStr != "" && errStr != "cancelled" && s.Usage != nil {
+				s.Usage.NoteLimitError(fmt.Errorf("%s", errStr))
+			}
 			if event["cancelled"] == true {
 				cancelled = true
 			}
@@ -957,6 +981,9 @@ func (s *Server) runBuildChat(parent context.Context, sessionID, content string,
 
 	ch, err := client.Prompt(ctx, sessionID, rawID, content)
 	if err != nil {
+		if s.Usage != nil {
+			s.Usage.NoteLimitError(err)
+		}
 		s.Hub.Broadcast(map[string]any{
 			"type": "assistant_done", "session_id": sessionID,
 			"content": "", "error": err.Error(), "hint": agentHint(err),
@@ -977,6 +1004,9 @@ func (s *Server) runBuildChat(parent context.Context, sessionID, content string,
 			gotDone = true
 			if c, ok := event["content"].(string); ok && c != "" {
 				fullText = c
+			}
+			if errStr, ok := event["error"].(string); ok && errStr != "" && errStr != "cancelled" && s.Usage != nil {
+				s.Usage.NoteLimitError(fmt.Errorf("%s", errStr))
 			}
 		}
 		s.Hub.Broadcast(event, sessionID, nil)
