@@ -77,9 +77,29 @@
             <span class="pill ctx-meter" id="ctxMeter" title="Session context">—</span>
             <span class="ctx-sub" id="ctxSub" hidden>via Grok Build</span>
           </div>
-          <div class="ctx-wrap usage-wrap">
-            <span class="pill usage-meter" id="usageMeter" title="SuperGrok weekly usage">—</span>
-            <span class="ctx-sub" id="usageSub">weekly</span>
+          <div class="usage-wrap" id="usageWrap">
+            <button type="button" class="pill usage-meter empty" id="usageMeter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-label="SuperGrok weekly usage" aria-expanded="false" aria-controls="usageTip" title="SuperGrok weekly usage">
+              <span class="usage-fill" id="usageFill" aria-hidden="true"></span>
+              <span class="usage-value" id="usageValue">—</span>
+            </button>
+            <div class="usage-tip" id="usageTip" hidden role="tooltip">
+              <div class="usage-tip-row">
+                <span class="usage-tip-label">Weekly pool</span>
+                <span class="pill usage-meter usage-tip-pill" id="usageTipWeekly" aria-hidden="true">
+                  <span class="usage-fill" id="usageTipWeeklyFill"></span>
+                  <span class="usage-value" id="usageTipWeeklyVal">—</span>
+                </span>
+              </div>
+              <div class="usage-tip-meta" id="usageTipWeeklyMeta">Reset unknown</div>
+              <div class="usage-tip-row">
+                <span class="usage-tip-label">5-hour window</span>
+                <span class="pill usage-meter usage-tip-pill" id="usageTipFive" aria-hidden="true">
+                  <span class="usage-fill" id="usageTipFiveFill"></span>
+                  <span class="usage-value" id="usageTipFiveVal">—</span>
+                </span>
+              </div>
+              <div class="usage-tip-meta" id="usageTipFiveMeta">Not reported by billing</div>
+            </div>
           </div>
         </div>
       </header>

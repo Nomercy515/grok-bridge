@@ -32,7 +32,18 @@
     ctxMeter: $("ctxMeter"),
     ctxSub: $("ctxSub"),
     usageMeter: $("usageMeter"),
-    usageSub: $("usageSub"),
+    usageFill: $("usageFill"),
+    usageValue: $("usageValue"),
+    usageWrap: $("usageWrap"),
+    usageTip: $("usageTip"),
+    usageTipWeekly: $("usageTipWeekly"),
+    usageTipWeeklyFill: $("usageTipWeeklyFill"),
+    usageTipWeeklyVal: $("usageTipWeeklyVal"),
+    usageTipWeeklyMeta: $("usageTipWeeklyMeta"),
+    usageTipFive: $("usageTipFive"),
+    usageTipFiveFill: $("usageTipFiveFill"),
+    usageTipFiveVal: $("usageTipFiveVal"),
+    usageTipFiveMeta: $("usageTipFiveMeta"),
     modeBadge: $("modeBadge"),
     btnSettings: $("btnSettings"),
     settingsModal: $("settingsModal"),
@@ -294,18 +305,76 @@
     }
   }
 
+  let usageTipOpen = false;
+  let lastUsageSnap = null;
+
+  function setUsageFill(pct, fillEl, meterEl) {
+    const v = Math.max(0, Math.min(100, Number(pct) || 0));
+    const target = meterEl || els.usageMeter;
+    if (target) target.style.setProperty("--usage-pct", v + "%");
+    const fill = fillEl || els.usageFill;
+    if (fill) fill.style.width = v + "%";
+  }
+
+  function syncTipPill(meterEl, fillEl, valEl, pct, known, atLimit) {
+    if (!meterEl || !valEl) return;
+    let main = "—";
+    let fill = 0;
+    if (known) {
+      const p = Math.round(Number(pct));
+      main = p + "%";
+      fill = p;
+    } else if (atLimit) {
+      main = "100%";
+      fill = 100;
+    }
+    valEl.textContent = main;
+    setUsageFill(fill, fillEl, meterEl);
+    meterEl.classList.toggle("empty", !known && !atLimit);
+    meterEl.classList.toggle("warn", !!atLimit);
+  }
+
+  function closeUsageTip() {
+    usageTipOpen = false;
+    if (els.usageTip) els.usageTip.hidden = true;
+    if (els.usageMeter) els.usageMeter.setAttribute("aria-expanded", "false");
+  }
+
+  function openUsageTip() {
+    if (!els.usageTip) return;
+    usageTipOpen = true;
+    els.usageTip.hidden = false;
+    if (els.usageMeter) els.usageMeter.setAttribute("aria-expanded", "true");
+  }
+
+  function toggleUsageTip(ev) {
+    if (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+    if (usageTipOpen) closeUsageTip();
+    else openUsageTip();
+  }
+
   function clearUsageMeter() {
     if (!els.usageMeter) return;
-    els.usageMeter.textContent = "—";
-    els.usageMeter.title = "SuperGrok weekly usage unknown";
+    lastUsageSnap = null;
+    const label = els.usageValue || els.usageMeter;
+    if (label && label !== els.usageMeter) label.textContent = "—";
+    else if (!els.usageValue) els.usageMeter.textContent = "—";
+    setUsageFill(0);
+    els.usageMeter.title = "SuperGrok weekly usage — click for details";
+    els.usageMeter.removeAttribute("aria-valuenow");
     els.usageMeter.classList.add("empty");
     els.usageMeter.classList.remove("warn");
-    const wrap = els.usageMeter.closest(".usage-wrap");
-    if (wrap) wrap.classList.remove("warn");
-    if (els.usageSub) {
-      els.usageSub.textContent = "weekly";
-      els.usageSub.hidden = false;
+    if (els.usageWrap) els.usageWrap.classList.remove("warn");
+    syncTipPill(els.usageTipWeekly, els.usageTipWeeklyFill, els.usageTipWeeklyVal, 0, false, false);
+    if (els.usageTipWeeklyMeta) els.usageTipWeeklyMeta.textContent = "Reset unknown";
+    syncTipPill(els.usageTipFive, els.usageTipFiveFill, els.usageTipFiveVal, 0, false, false);
+    if (els.usageTipFiveMeta) {
+      els.usageTipFiveMeta.textContent = "Not reported by billing (rate-limit only)";
     }
+    closeUsageTip();
   }
 
   function updateUsageMeter(u) {
@@ -314,42 +383,68 @@
       clearUsageMeter();
       return;
     }
-    const wrap = els.usageMeter.closest(".usage-wrap");
+    lastUsageSnap = u;
+    const wrap = els.usageWrap || els.usageMeter.closest(".usage-wrap");
     const used = u.used_percent;
     const rem = u.remaining_percent;
     const resetLabel = formatResetLocal(u.reset_at);
     const atLimit = !!u.at_limit || (rem != null && Number(rem) <= 0.05);
     const known = u.available && used != null && Number.isFinite(Number(used));
-    els.usageMeter.classList.remove("empty");
-    if (wrap) wrap.classList.toggle("warn", atLimit);
+    const label = els.usageValue || els.usageMeter;
+
+    els.usageMeter.classList.toggle("empty", !known && !atLimit);
     els.usageMeter.classList.toggle("warn", atLimit);
+    if (wrap) wrap.classList.toggle("warn", atLimit);
 
     let main = "—";
+    let fill = 0;
     if (known) {
       const pct = Math.round(Number(used));
       main = pct + "%";
+      fill = pct;
+      els.usageMeter.setAttribute("aria-valuenow", String(pct));
     } else if (atLimit) {
-      main = "limit";
+      main = "100%";
+      fill = 100;
+      els.usageMeter.setAttribute("aria-valuenow", "100");
     } else {
-      main = "—";
-      els.usageMeter.classList.add("empty");
+      els.usageMeter.removeAttribute("aria-valuenow");
     }
-    els.usageMeter.textContent = main;
+    if (label && label !== els.usageMeter) label.textContent = main;
+    setUsageFill(fill);
 
-    let sub = "weekly";
-    if (resetLabel) sub = "resets " + resetLabel;
-    else if (!known) sub = "usage unknown";
-    if (els.usageSub) {
-      els.usageSub.hidden = false;
-      els.usageSub.textContent = sub;
+    syncTipPill(els.usageTipWeekly, els.usageTipWeeklyFill, els.usageTipWeeklyVal, used, known, atLimit);
+    if (els.usageTipWeeklyMeta) {
+      els.usageTipWeeklyMeta.textContent = resetLabel
+        ? ("Resets " + resetLabel + " (local)")
+        : "Reset unknown";
     }
 
-    const bits = ["SuperGrok / Build weekly pool"];
-    if (known) bits.push("used " + Math.round(Number(used)) + "%");
-    else bits.push("usage unknown");
-    if (resetLabel) bits.push("resets " + resetLabel + " (local time)");
-    if (u.source) bits.push("source: " + u.source);
-    if (u.reason) bits.push(u.reason);
+    // 5-hour window: billing credits endpoint has no percent — only rate-limit signals.
+    const fivePct = u.five_hour_percent;
+    const fiveKnown = fivePct != null && Number.isFinite(Number(fivePct));
+    const fiveLimit = !!u.five_hour_at_limit;
+    const fiveReset = formatResetLocal(u.five_hour_reset_at);
+    syncTipPill(els.usageTipFive, els.usageTipFiveFill, els.usageTipFiveVal, fivePct, fiveKnown, fiveLimit && !fiveKnown ? true : fiveLimit);
+    if (els.usageTipFiveMeta) {
+      if (fiveKnown && fiveReset) {
+        els.usageTipFiveMeta.textContent = "Resets " + fiveReset + " (local)";
+      } else if (fiveReset) {
+        els.usageTipFiveMeta.textContent = "Rate-limited · opens " + fiveReset + " (local)";
+      } else if (fiveLimit) {
+        els.usageTipFiveMeta.textContent = "Rate-limited · reset time unknown";
+      } else {
+        els.usageTipFiveMeta.textContent = "Not reported by billing (only on rate-limit)";
+      }
+    }
+
+    // Native title stays short; details live in the click/hover tip.
+    const bits = [];
+    if (known) bits.push("Weekly " + Math.round(Number(used)) + "%");
+    else if (atLimit) bits.push("Weekly at limit");
+    else bits.push("Weekly unknown");
+    if (resetLabel) bits.push("resets " + resetLabel);
+    bits.push("click for 5-hour");
     els.usageMeter.title = bits.join(" · ");
   }
 
@@ -516,7 +611,23 @@
     const t = data.type;
     if (t === "hello") return;
     if (t === "session_created") {
-      refreshSessions();
+    
+  if (els.usageMeter) {
+    els.usageMeter.addEventListener("click", toggleUsageTip);
+    els.usageMeter.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") toggleUsageTip(ev);
+    });
+  }
+  document.addEventListener("click", (ev) => {
+    if (!usageTipOpen || !els.usageWrap) return;
+    if (els.usageWrap.contains(ev.target)) return;
+    closeUsageTip();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") closeUsageTip();
+  });
+
+  refreshSessions();
       return;
     }
     if (t === "session.snapshot") {

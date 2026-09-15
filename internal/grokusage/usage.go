@@ -44,6 +44,11 @@ type Snapshot struct {
 	ResetAt          *string  `json:"reset_at,omitempty"` // RFC3339 UTC
 	PeriodType       string   `json:"period_type,omitempty"`
 	AtLimit          bool     `json:"at_limit"`
+	// Five-hour / short rate window — only filled from rate-limit errors.
+	// Billing credits config does not expose a 5-hour percent.
+	FiveHourPercent *float64 `json:"five_hour_percent,omitempty"`
+	FiveHourResetAt *string  `json:"five_hour_reset_at,omitempty"`
+	FiveHourAtLimit bool     `json:"five_hour_at_limit"`
 	Source           string   `json:"source"` // billing | grok-log | limit-error | none
 	Reason           string   `json:"reason,omitempty"`
 	FetchedAt        string   `json:"fetched_at,omitempty"`
@@ -131,11 +136,19 @@ func (c *Cache) NoteLimitError(err error) {
 			s.Source = "limit-error"
 		}
 		s.Reason = info.Reason
-	} else if s.UsedPercent == nil {
-		// Transient 429: keep usage unknown, surface reset if we got one.
-		s.Source = "limit-error"
-		s.Reason = info.Reason
-		s.Available = s.ResetAt != nil
+	} else {
+		// Transient 429 / short rate window (often ~5h): do not invent a percent.
+		s.FiveHourAtLimit = true
+		if info.ResetAt != "" {
+			s.FiveHourResetAt = strPtr(info.ResetAt)
+		}
+		if s.UsedPercent == nil {
+			s.Source = "limit-error"
+			s.Reason = info.Reason
+			s.Available = s.ResetAt != nil || s.FiveHourResetAt != nil
+		} else if s.Reason == "" {
+			s.Reason = info.Reason
+		}
 	}
 	s.FetchedAt = c.now().UTC().Format(time.RFC3339)
 	c.snap = s
@@ -152,11 +165,16 @@ func (c *Cache) fetchLocked(ctx context.Context, now time.Time) Snapshot {
 		logPath = filepath.Join(home, "logs", "unified.jsonl")
 	}
 
+	prevFive := c.snap
 	if raw, err := fetchBilling(ctx, c.httpClient, c.billingURL, authPath); err == nil {
 		s, perr := parseBilling(raw, now)
 		if perr == nil && s.Available {
 			s.Source = "billing"
 			s.FetchedAt = now.UTC().Format(time.RFC3339)
+			// Keep short-window rate-limit signal; billing has no 5h percent.
+			s.FiveHourPercent = prevFive.FiveHourPercent
+			s.FiveHourResetAt = prevFive.FiveHourResetAt
+			s.FiveHourAtLimit = prevFive.FiveHourAtLimit
 			return s
 		}
 		if perr != nil {
