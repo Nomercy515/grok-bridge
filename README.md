@@ -36,8 +36,11 @@ Default listen port: **4020**. Canonical phone URL:
 - **Live WebSocket chat** — streaming assistant replies with fan-out to every connected client; `session.snapshot` resume after reconnect
 - **Pairing lock** — 6-digit code → hub bearer token; code rotates after each successful pair; token rotate without re-pairing
 - **Mobile-friendly UI** — dark greyscale cockpit, session rail, floating composer, live/sync/offline status (see `docs/UI_NOTES.md`)
+- **SuperGrok usage meter** — compact weekly fill-pill in the header; click the tip for weekly pool details and the short **5-hour** window when known (5h comes from rate-limit signals; billing does not always expose a 5h %)
+- **Web Notifications** — optional browser alerts for Grok replies while you are away from the chat tab
+- **Chat UX** — ATX `##` lines render as headers; Subagent badge + Parent jump on grok-only rows; older rail chats collapse; send/catch-up dedupe so You/assistant bubbles stay single
 - **HTTP fallback when WS drops** — `POST /api/sessions/{id}/messages`, background catch-up poll, reconnect backoff
-- **Tailscale-first networking** — MagicDNS + `100.x` survive LAN DHCP churn; `GET /api/endpoint` + sidebar show the bookmark URL
+- **Tailscale-first networking** — hub bind prefers the machine Tailscale `100.x` (via `endpoint.env` / supervise) so phones reach the hub without a localhost-only bind; MagicDNS + `GET /api/endpoint` + sidebar show the bookmark URL
 - **TLS / WSS** — optional certs; install can mint self-signed SANs for localhost + MagicDNS + Tailscale IP
 - **Supervised install** — `scripts/supervise.sh` + systemd (`grok-bridge-endpoint` then `grok-bridge`) so the hub comes back after reboot
 - **Demo agent** — `/?demo=1` or `GROK_BRIDGE_AGENT=demo` for canned streams while you wire the rest
@@ -127,7 +130,7 @@ This project does not invent other mesh, tunnel, or LAN auto-discovery paths.
 
 | Setting | Default | Env |
 |---------|---------|-----|
-| Host | `127.0.0.1` | `GROK_BRIDGE_HOST` (install prefers Tailscale `100.x`, else `127.0.0.1`; `0.0.0.0` only if set explicitly) |
+| Host | Tailscale `100.x` when available | `GROK_BRIDGE_HOST` (supervise / endpoint refresh prefer Tailscale IPv4; else `127.0.0.1`; `0.0.0.0` only if set explicitly) |
 | Port | `4020` | `GROK_BRIDGE_PORT` (keep callback URL on the same port) |
 | Data | `./data` | `GROK_BRIDGE_DATA` |
 | TLS cert / key | off | `GROK_BRIDGE_SSL_CERT` / `GROK_BRIDGE_SSL_KEY` |
