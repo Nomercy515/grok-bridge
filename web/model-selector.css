@@ -110,3 +110,15 @@
 .model-bar {
   display: none !important;
 }
+
+.composer > .model-chip-wrap {
+  flex: 0 0 auto;
+  position: relative;
+  align-self: flex-end;
+  margin-bottom: 4px;
+}
+.model-chip {
+  color: var(--text, #e8e8e8);
+  border-color: var(--border-strong, #3a3a3a);
+  background: var(--bg-elev, #161616);
+}

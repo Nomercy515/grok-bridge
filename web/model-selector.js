@@ -1,6 +1,6 @@
 /**
  * Composer-chip model selector — loads real ACP models from the hub.
- * Always visible (this app is for Grok Build). Chip only — no mock bar.
+ * Always visible (this app is for Grok Build). Chip markup lives in index.html.
  */
 (function () {
   const TOKEN_KEY = "grok_bridge_token";
@@ -31,48 +31,29 @@
     const send = $("btnSend");
     if (!dock || !form || !ta || !send) return false;
 
-    // Remove mock-only chrome if present from older deploys
     $("modelMockSwitch")?.remove();
     $("modelBar")?.remove();
     document.body.classList.remove("model-placement-bar");
     document.body.classList.add("model-placement-chip");
 
-    if (!ta.closest(".composer-field")) {
-      const field = document.createElement("div");
-      field.className = "composer-field";
-      const row = document.createElement("div");
-      row.className = "composer-field-row";
-      ta.parentNode.insertBefore(field, ta);
-      field.appendChild(row);
-      row.appendChild(ta);
-
-      const chipWrap = document.createElement("div");
-      chipWrap.className = "model-chip-wrap";
-      chipWrap.innerHTML =
+    // Prefer static chip in index.html; inject only if missing.
+    if (!$("modelChip")) {
+      const wrap = document.createElement("div");
+      wrap.className = "model-chip-wrap";
+      wrap.id = "modelChipWrap";
+      wrap.innerHTML =
         '<button type="button" class="model-chip" id="modelChip" aria-haspopup="listbox" aria-expanded="false" title="Model">' +
         '<span class="model-chip-label">Model</span><span class="chev" aria-hidden="true">▾</span></button>' +
         '<div class="model-menu" id="modelMenuChip" hidden role="listbox" aria-label="Choose model"></div>';
-      row.appendChild(chipWrap);
-    } else if (!$("modelChip")) {
-      const row = ta.closest(".composer-field-row") || ta.parentNode;
-      const chipWrap = document.createElement("div");
-      chipWrap.className = "model-chip-wrap";
-      chipWrap.innerHTML =
-        '<button type="button" class="model-chip" id="modelChip" aria-haspopup="listbox" aria-expanded="false" title="Model">' +
-        '<span class="model-chip-label">Model</span><span class="chev" aria-hidden="true">▾</span></button>' +
-        '<div class="model-menu" id="modelMenuChip" hidden role="listbox" aria-label="Choose model"></div>';
-      row.appendChild(chipWrap);
+      form.insertBefore(wrap, send);
     }
 
-    const chip = $("modelChip");
-    if (chip) chip.title = "Model";
-    setChipVisible(true);
-    return true;
-  }
-
-  function setChipVisible(show) {
-    const wrap = document.querySelector(".model-chip-wrap");
-    if (wrap) wrap.hidden = !show;
+    const wrap = $("modelChipWrap") || document.querySelector(".model-chip-wrap");
+    if (wrap) {
+      wrap.hidden = false;
+      wrap.removeAttribute("hidden");
+    }
+    return !!$("modelChip");
   }
 
   function labelFor(id) {
@@ -117,7 +98,7 @@
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+      .replace(/\"/g, "&quot;");
   }
   function escapeAttr(s) {
     return escapeHtml(s).replace(/'/g, "&#39;");
@@ -136,7 +117,11 @@
   }
 
   async function loadModels() {
-    setChipVisible(true);
+    const wrap = $("modelChipWrap") || document.querySelector(".model-chip-wrap");
+    if (wrap) {
+      wrap.hidden = false;
+      wrap.removeAttribute("hidden");
+    }
     const id = activeSessionId();
     if (!id) {
       current = {
