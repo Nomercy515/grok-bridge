@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"grok-bridge/internal/sessions"
 	"time"
 )
 
@@ -443,5 +445,116 @@ func TestListHidesGrokOnlySessions(t *testing.T) {
 	}
 	if _, ok := envIDs["build:sub-1"]; !ok {
 		t.Fatalf("env include missing sub-1: %+v", envIDs)
+	}
+}
+
+func TestListExposesSubagentParentAndKind(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GROK_BRIDGE_GROK_HOME", home)
+	t.Setenv("GROK_HOME", "")
+	t.Setenv("GROK_BRIDGE_INCLUDE_GROK_ONLY", "")
+
+	writeFixture(t, home, "/tmp/proj", "human-1", map[string]any{
+		"info":            map[string]any{"id": "human-1", "cwd": "/tmp/proj"},
+		"generated_title": "Parent chat",
+		"updated_at":      "2026-09-07T12:00:00Z",
+	}, []string{
+		`{"role":"user","content":"please fix login"}`,
+		`{"role":"assistant","content":"ok"}`,
+	})
+	writeFixture(t, home, "/tmp/proj", "sub-1", map[string]any{
+		"info":              map[string]any{"id": "sub-1", "cwd": "/tmp/proj"},
+		"generated_title":   "Explore auth",
+		"session_kind":      "subagent",
+		"parent_session_id": "human-1",
+		"subagent_type":     "explore",
+		"updated_at":        "2026-09-07T14:00:00Z",
+	}, []string{
+		`{"role":"user","content":"Find helpers."}`,
+		`{"role":"assistant","content":"Searching."}`,
+	})
+	writeFixture(t, home, "/tmp/proj", "subfork-1", map[string]any{
+		"info":              map[string]any{"id": "subfork-1"},
+		"title":             "Child fork",
+		"session_kind":      "subagent_fork",
+		"parent_session_id": "human-1",
+		"updated_at":        "2026-09-07T14:30:00Z",
+	}, []string{
+		`{"role":"assistant","content":"Continuing."}`,
+	})
+
+	shown := ListIncluding(true)
+	byID := map[string]sessions.SessionSummary{}
+	for _, s := range shown {
+		byID[s.ID] = s
+	}
+	sub, ok := byID["build:sub-1"]
+	if !ok {
+		t.Fatalf("missing sub-1: %+v", byID)
+	}
+	if !sub.GrokOnly || sub.SessionKind != "subagent" || sub.ParentSessionID != "build:human-1" {
+		t.Fatalf("sub-1 fields: grok_only=%v kind=%q parent=%q", sub.GrokOnly, sub.SessionKind, sub.ParentSessionID)
+	}
+	fork, ok := byID["build:subfork-1"]
+	if !ok {
+		t.Fatalf("missing subfork-1")
+	}
+	if !fork.GrokOnly || fork.SessionKind != "subagent_fork" || fork.ParentSessionID != "build:human-1" {
+		t.Fatalf("subfork-1 fields: grok_only=%v kind=%q parent=%q", fork.GrokOnly, fork.SessionKind, fork.ParentSessionID)
+	}
+	human := byID["build:human-1"]
+	if human.GrokOnly || human.ParentSessionID != "" {
+		t.Fatalf("human-1 should be plain build: %+v", human)
+	}
+}
+
+func TestWalkParentsForGrok(t *testing.T) {
+	root := t.TempDir()
+	user := filepath.Join(root, "home", "alice")
+	data := filepath.Join(user, "project", "app", "data")
+	if err := os.MkdirAll(filepath.Join(user, ".grok", "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := walkParentsForGrok(data)
+	want := filepath.Join(user, ".grok")
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	if walkParentsForGrok(t.TempDir()) != "" {
+		t.Fatal("empty tree should not infer")
+	}
+}
+
+func TestInferGrokHomeFromDataDir(t *testing.T) {
+	root := t.TempDir()
+	user := filepath.Join(root, "home", "alice")
+	data := filepath.Join(user, "proj", "data")
+	if err := os.MkdirAll(filepath.Join(user, ".grok", "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GROK_BRIDGE_GROK_HOME", "")
+	t.Setenv("GROK_HOME", "")
+	t.Setenv("GROK_BRIDGE_DATA", data)
+	got := inferGrokHome()
+	want := filepath.Join(user, ".grok")
+	if got != want {
+		t.Fatalf("infer: got %q want %q", got, want)
+	}
+}
+
+func TestGrokHomePrefersProcessHomeWithSummaries(t *testing.T) {
+	t.Setenv("GROK_BRIDGE_GROK_HOME", "")
+	t.Setenv("GROK_HOME", "")
+	// Explicit env still wins even when the path has no sessions.
+	missing := filepath.Join(t.TempDir(), "no-grok-home")
+	t.Setenv("GROK_BRIDGE_GROK_HOME", missing)
+	if got := GrokHome(); got != filepath.Clean(missing) {
+		t.Fatalf("explicit missing override: got %q want %q", got, missing)
 	}
 }

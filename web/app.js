@@ -11,6 +11,7 @@
   const DEMO = params.get("demo") === "1";
   const TOKEN_KEY = "grok_bridge_token";
   const GROK_ONLY_KEY = "grok_bridge_include_grok_only";
+  const PUSH_KEY = "grok_bridge_push_notifications";
   const LIVE_MS = 4000;
   const RECONNECT_BASE_MS = 1500;
   const RECONNECT_MAX_HIDDEN_MS = 30000;
@@ -30,18 +31,36 @@
     btnMenu: $("btnMenu"),
     ctxMeter: $("ctxMeter"),
     ctxSub: $("ctxSub"),
+    usageMeter: $("usageMeter"),
+    usageFill: $("usageFill"),
+    usageValue: $("usageValue"),
+    usageWrap: $("usageWrap"),
+    usageTip: $("usageTip"),
+    usageTipWeekly: $("usageTipWeekly"),
+    usageTipWeeklyFill: $("usageTipWeeklyFill"),
+    usageTipWeeklyVal: $("usageTipWeeklyVal"),
+    usageTipWeeklyMeta: $("usageTipWeeklyMeta"),
+    usageTipFive: $("usageTipFive"),
+    usageTipFiveFill: $("usageTipFiveFill"),
+    usageTipFiveVal: $("usageTipFiveVal"),
+    usageTipFiveMeta: $("usageTipFiveMeta"),
     modeBadge: $("modeBadge"),
     btnSettings: $("btnSettings"),
     settingsModal: $("settingsModal"),
     demoToggle: $("demoToggle"),
     btnRestart: $("btnRestart"),
     grokOnlyToggle: $("grokOnlyToggle"),
+    pushToggle: $("pushToggle"),
+    pushHint: $("pushHint"),
     btnJumpBottom: $("btnJumpBottom"),
   };
 
   let token = localStorage.getItem(TOKEN_KEY) || "";
   let sessions = [];
   let includeGrokOnly = localStorage.getItem(GROK_ONLY_KEY) === "1";
+  let pushEnabled = localStorage.getItem(PUSH_KEY) === "1";
+  const lastPushAt = Object.create(null);
+  let pushSwReg = null;
   let activeId = null;
   let ws = null;
   let streamingEl = null;
@@ -73,16 +92,13 @@
     try {
       const u = new URL(String(raw || ""));
       const host = u.hostname;
-      const localHttp =
-        u.protocol === "http:" && (host === "localhost" || host === "127.0.0.1");
-      const httpsOk = u.protocol === "https:";
-      if (!httpsOk && !localHttp) return null;
-      const okHost =
-        host === "localhost" ||
-        host === "127.0.0.1" ||
-        /^100\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host) ||
-        /\.ts\.net$/i.test(host);
+      const isLocal = host === "localhost" || host === "127.0.0.1";
+      const isTailscale =
+        /^100\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host) || /\.ts\.net$/i.test(host);
+      const okHost = isLocal || isTailscale;
       if (!okHost) return null;
+      // http is valid for Tailscale when hub has no TLS; https always ok for allowlisted hosts.
+      if (u.protocol !== "https:" && u.protocol !== "http:") return null;
       return u;
     } catch (_) {
       return null;
@@ -269,6 +285,169 @@
     return Math.round(k) + "k";
   }
 
+
+  function formatResetLocal(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const now = new Date();
+    const opts = { hour: "numeric", minute: "2-digit" };
+    const sameDay = d.toDateString() === now.toDateString();
+    if (!sameDay) {
+      opts.weekday = "short";
+      opts.month = "short";
+      opts.day = "numeric";
+    }
+    try {
+      return d.toLocaleString(undefined, opts);
+    } catch (e) {
+      return d.toLocaleString();
+    }
+  }
+
+  let usageTipOpen = false;
+  let lastUsageSnap = null;
+
+  function setUsageFill(pct, fillEl, meterEl) {
+    const v = Math.max(0, Math.min(100, Number(pct) || 0));
+    const target = meterEl || els.usageMeter;
+    if (target) target.style.setProperty("--usage-pct", v + "%");
+    const fill = fillEl || els.usageFill;
+    if (fill) fill.style.width = v + "%";
+  }
+
+  function syncTipPill(meterEl, fillEl, valEl, pct, known, atLimit) {
+    if (!meterEl || !valEl) return;
+    let main = "—";
+    let fill = 0;
+    if (known) {
+      const p = Math.round(Number(pct));
+      main = p + "%";
+      fill = p;
+    } else if (atLimit) {
+      main = "100%";
+      fill = 100;
+    }
+    valEl.textContent = main;
+    setUsageFill(fill, fillEl, meterEl);
+    meterEl.classList.toggle("empty", !known && !atLimit);
+    meterEl.classList.toggle("warn", !!atLimit);
+  }
+
+  function closeUsageTip() {
+    usageTipOpen = false;
+    if (els.usageTip) els.usageTip.hidden = true;
+    if (els.usageMeter) els.usageMeter.setAttribute("aria-expanded", "false");
+  }
+
+  function openUsageTip() {
+    if (!els.usageTip) return;
+    usageTipOpen = true;
+    els.usageTip.hidden = false;
+    if (els.usageMeter) els.usageMeter.setAttribute("aria-expanded", "true");
+  }
+
+  function toggleUsageTip(ev) {
+    if (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+    if (usageTipOpen) closeUsageTip();
+    else openUsageTip();
+  }
+
+  function clearUsageMeter() {
+    if (!els.usageMeter) return;
+    lastUsageSnap = null;
+    const label = els.usageValue || els.usageMeter;
+    if (label && label !== els.usageMeter) label.textContent = "—";
+    else if (!els.usageValue) els.usageMeter.textContent = "—";
+    setUsageFill(0);
+    els.usageMeter.title = "SuperGrok weekly usage — click for details";
+    els.usageMeter.removeAttribute("aria-valuenow");
+    els.usageMeter.classList.add("empty");
+    els.usageMeter.classList.remove("warn");
+    if (els.usageWrap) els.usageWrap.classList.remove("warn");
+    syncTipPill(els.usageTipWeekly, els.usageTipWeeklyFill, els.usageTipWeeklyVal, 0, false, false);
+    if (els.usageTipWeeklyMeta) els.usageTipWeeklyMeta.textContent = "Reset unknown";
+    syncTipPill(els.usageTipFive, els.usageTipFiveFill, els.usageTipFiveVal, 0, false, false);
+    if (els.usageTipFiveMeta) {
+      els.usageTipFiveMeta.textContent = "Not reported by billing (rate-limit only)";
+    }
+    closeUsageTip();
+  }
+
+  function updateUsageMeter(u) {
+    if (!els.usageMeter) return;
+    if (!u) {
+      clearUsageMeter();
+      return;
+    }
+    lastUsageSnap = u;
+    const wrap = els.usageWrap || els.usageMeter.closest(".usage-wrap");
+    const used = u.used_percent;
+    const rem = u.remaining_percent;
+    const resetLabel = formatResetLocal(u.reset_at);
+    const atLimit = !!u.at_limit || (rem != null && Number(rem) <= 0.05);
+    const known = u.available && used != null && Number.isFinite(Number(used));
+    const label = els.usageValue || els.usageMeter;
+
+    els.usageMeter.classList.toggle("empty", !known && !atLimit);
+    els.usageMeter.classList.toggle("warn", atLimit);
+    if (wrap) wrap.classList.toggle("warn", atLimit);
+
+    let main = "—";
+    let fill = 0;
+    if (known) {
+      const pct = Math.round(Number(used));
+      main = pct + "%";
+      fill = pct;
+      els.usageMeter.setAttribute("aria-valuenow", String(pct));
+    } else if (atLimit) {
+      main = "100%";
+      fill = 100;
+      els.usageMeter.setAttribute("aria-valuenow", "100");
+    } else {
+      els.usageMeter.removeAttribute("aria-valuenow");
+    }
+    if (label && label !== els.usageMeter) label.textContent = main;
+    setUsageFill(fill);
+
+    syncTipPill(els.usageTipWeekly, els.usageTipWeeklyFill, els.usageTipWeeklyVal, used, known, atLimit);
+    if (els.usageTipWeeklyMeta) {
+      els.usageTipWeeklyMeta.textContent = resetLabel
+        ? ("Resets " + resetLabel + " (local)")
+        : "Reset unknown";
+    }
+
+    // 5-hour window: billing credits endpoint has no percent — only rate-limit signals.
+    const fivePct = u.five_hour_percent;
+    const fiveKnown = fivePct != null && Number.isFinite(Number(fivePct));
+    const fiveLimit = !!u.five_hour_at_limit;
+    const fiveReset = formatResetLocal(u.five_hour_reset_at);
+    syncTipPill(els.usageTipFive, els.usageTipFiveFill, els.usageTipFiveVal, fivePct, fiveKnown, fiveLimit && !fiveKnown ? true : fiveLimit);
+    if (els.usageTipFiveMeta) {
+      if (fiveKnown && fiveReset) {
+        els.usageTipFiveMeta.textContent = "Resets " + fiveReset + " (local)";
+      } else if (fiveReset) {
+        els.usageTipFiveMeta.textContent = "Rate-limited · opens " + fiveReset + " (local)";
+      } else if (fiveLimit) {
+        els.usageTipFiveMeta.textContent = "Rate-limited · reset time unknown";
+      } else {
+        els.usageTipFiveMeta.textContent = "Not reported by billing (only on rate-limit)";
+      }
+    }
+
+    // Native title stays short; details live in the click/hover tip.
+    const bits = [];
+    if (known) bits.push("Weekly " + Math.round(Number(used)) + "%");
+    else if (atLimit) bits.push("Weekly at limit");
+    else bits.push("Weekly unknown");
+    if (resetLabel) bits.push("resets " + resetLabel);
+    bits.push("click for 5-hour");
+    els.usageMeter.title = bits.join(" · ");
+  }
+
   function clearCtxMeter() {
     if (!els.ctxMeter) return;
     els.ctxMeter.textContent = "—";
@@ -400,7 +579,7 @@
       reconnectDelay = RECONNECT_BASE_MS;
       if (els.btnRestart) els.btnRestart.disabled = false;
       refreshPollState();
-      if (activeId) subscribeSession(activeId);
+      resubscribeSessions();
       catchUp();
     };
     ws.onclose = () => {
@@ -432,7 +611,23 @@
     const t = data.type;
     if (t === "hello") return;
     if (t === "session_created") {
-      refreshSessions();
+    
+  if (els.usageMeter) {
+    els.usageMeter.addEventListener("click", toggleUsageTip);
+    els.usageMeter.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") toggleUsageTip(ev);
+    });
+  }
+  document.addEventListener("click", (ev) => {
+    if (!usageTipOpen || !els.usageWrap) return;
+    if (els.usageWrap.contains(ev.target)) return;
+    closeUsageTip();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") closeUsageTip();
+  });
+
+  refreshSessions();
       return;
     }
     if (t === "session.snapshot") {
@@ -447,6 +642,9 @@
     if (data.session_id && activeId && data.session_id !== activeId) {
       if (t === "assistant_start" || t === "assistant_delta" || t === "assistant_done") {
         markUnread(data.session_id);
+        if (t === "assistant_done") {
+          maybeNotifyReply(data.session_id, data.content || "", data);
+        }
         refreshSessions().catch(() => {});
       }
       return;
@@ -455,7 +653,33 @@
     if (t === "user_message") {
       const mid = data.message_id;
       if (mid && els.feed.querySelector('.msg[data-id="' + CSS.escape(mid) + '"]')) return;
+      if (isGrokScaffolding(data.content || "")) {
+        const existingScaf = findScaffoldingMsgByContent(data.content || "");
+        if (existingScaf) {
+          if (mid) existingScaf.dataset.id = mid;
+          return;
+        }
+        const elScaf = appendMsg("user", data.content);
+        if (mid) elScaf.dataset.id = mid;
+        return;
+      }
       if (adoptOptimisticUser(data.content, mid)) return;
+      // Optimistic bubble may already carry a disk id from an early catchUp/merge.
+      // If the newest You line already shows this content, do not append a second bubble.
+      // Prefer keeping a real id over stamping build-live-*.
+      const userNodes = els.feed.querySelectorAll(".msg.user");
+      const lastUser = userNodes.length ? userNodes[userNodes.length - 1] : null;
+      if (lastUser) {
+        const body = lastUser.querySelector(".body");
+        const raw = body && (body.dataset.raw != null ? body.dataset.raw : body.textContent);
+        if (normalizeUserContent(raw || "") === normalizeUserContent(data.content || "")) {
+          const prevId = lastUser.dataset.id || "";
+          if (mid && (!prevId || prevId.indexOf("build-live-") === 0)) {
+            lastUser.dataset.id = mid;
+          }
+          return;
+        }
+      }
       const el = appendMsg("user", data.content);
       if (mid) el.dataset.id = mid;
       return;
@@ -485,6 +709,10 @@
       if (streamingEl) {
         streamingEl.classList.remove("streaming");
         if (data.content) setMsgBody(streamingEl, data.content);
+        // Synthetic id until catchUp/snapshot stamps the disk id (dedupe path).
+        if (!streamingEl.dataset.id) {
+          streamingEl.dataset.id = "build-live-asst-" + Date.now().toString(36);
+        }
         if (data.cancelled || data.error === "cancelled") markCancelled(streamingEl);
         if (data.error && data.error !== "cancelled") {
           const note = document.createElement("div");
@@ -505,7 +733,10 @@
       streamingTools = null;
       setTurnActive(false);
       if (isLooking(activeId)) clearUnread(activeId);
-      else if (activeId) markUnread(activeId);
+      else if (activeId) {
+        markUnread(activeId);
+        maybeNotifyReply(activeId, data.content || "", data);
+      }
       refreshSessions().catch(() => {});
       catchUp();
       return;
@@ -559,15 +790,68 @@
 
   function adoptOptimisticUser(content, messageId) {
     const want = normalizeUserContent(content);
-    const nodes = els.feed.querySelectorAll(".msg.user:not([data-id])");
-    for (let i = 0; i < nodes.length; i++) {
+    if (!want) return false;
+    const nodes = els.feed.querySelectorAll(".msg.user");
+    // Newest-first: only retarget synthetic bubbles (no id or build-live-*).
+    // Never adopt an older real server id — caller should append a new You bubble.
+    for (let i = nodes.length - 1; i >= 0; i--) {
       const el = nodes[i];
       const body = el.querySelector(".body");
       const raw = body && (body.dataset.raw != null ? body.dataset.raw : body.textContent);
-      if (normalizeUserContent(raw || "") === want) {
+      if (normalizeUserContent(raw || "") !== want) continue;
+      const id = el.dataset.id || "";
+      if (messageId && id === messageId) return true;
+      if (!id || id.indexOf("build-live-") === 0) {
         if (messageId) el.dataset.id = messageId;
         return true;
       }
+      // Newest content match is a real disk/server id — do not collapse.
+      return false;
+    }
+    return false;
+  }
+
+  function normalizeAssistantContent(raw) {
+    return String(raw == null ? "" : raw).trim();
+  }
+
+  /**
+   * Adopt a live/streaming assistant bubble into a disk/server message id.
+   * After assistant_done, streamingEl is cleared but the bubble often has no
+   * data-id yet — catchUp / session.snapshot must not append a second Grok line
+   * with the same text (common when tools/sources rendered under the live turn).
+   * Skip .grok-thoughts-msg scaffolding cards (also classed as assistant).
+   */
+  function adoptLiveAssistant(content, messageId, tools) {
+    const want = normalizeAssistantContent(content);
+    if (!want) return false;
+    if (streamingEl && !streamingEl.dataset.id) {
+      streamingEl.classList.remove("streaming");
+      setMsgBody(streamingEl, content || "");
+      if (messageId) streamingEl.dataset.id = messageId;
+      if (tools && tools.length) renderTools(streamingEl, tools);
+      streamingEl = null;
+      streamingTools = null;
+      return true;
+    }
+    const nodes = els.feed.querySelectorAll(".msg.assistant:not(.grok-thoughts-msg)");
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const el = nodes[i];
+      const body = el.querySelector(".body");
+      const raw = body && (body.dataset.raw != null ? body.dataset.raw : body.textContent);
+      if (normalizeAssistantContent(raw || "") !== want) continue;
+      const id = el.dataset.id || "";
+      if (messageId && id === messageId) {
+        if (tools && tools.length) renderTools(el, tools);
+        return true;
+      }
+      if (!id || id.indexOf("build-live-") === 0) {
+        if (messageId) el.dataset.id = messageId;
+        if (tools && tools.length) renderTools(el, tools);
+        return true;
+      }
+      // Newest content match is a real server id — do not collapse.
+      return false;
     }
     return false;
   }
@@ -732,7 +1016,7 @@
 
       box.appendChild(card);
     });
-    if (nearBottom()) scrollFeed();
+    if (!suppressAutoScroll && nearBottom()) scrollFeed();
     else updateJumpBottom();
   }
 
@@ -751,8 +1035,125 @@
   }
 
   /**
-   * XSS-safe message HTML: escape first, then bold; wrap complete
-   * <system-reminder> blocks (case-insensitive) as muted asides.
+   * ATX headers (MD-style), line-based, after escapeHtml:
+   * optional leading whitespace, then # / ## + space, then rest of line.
+   * Markers are stripped; content stays escaped. ## → h2 (required),
+   * # → h1 (same path). ###+ left literal.
+   */
+  function formatAtxHeaders(escaped) {
+    return String(escaped || "").replace(
+      /^[ \t]*(#{1,2})[ \t]+([^\n]+)/gm,
+      function (_m, hashes, content) {
+        const level = hashes.length;
+        return (
+          '<span class="msg-h' +
+          level +
+          '" role="heading" aria-level="' +
+          level +
+          '">' +
+          content +
+          "</span>"
+        );
+      }
+    );
+  }
+
+
+  /** Known Grok Build context-injection wrapper tags (UI presentation only). */
+  var GROK_SCAFFOLD_TAGS = [
+    "user_info",
+    "git_status",
+    "rules",
+    "user_rules",
+    "agent_skills",
+    "system_reminder",
+    "system-reminder",
+    "open_and_recently_viewed_files",
+    "agent_transcripts",
+    "mcp_file_system",
+    "attached_files",
+    "browser_content"
+  ];
+
+  /**
+   * Conservative heuristic: treat content as Grok Build scaffolding when it
+   * starts with a known wrapper tag and is primarily those blocks — not a
+   * normal human message that merely mentions a tag name in prose.
+   * Messages containing <user_query> are real user turns (unwrap path).
+   */
+  function isGrokScaffolding(raw) {
+    const s = String(raw == null ? "" : raw).trim();
+    if (s.length < 12) return false;
+    if (/<user_query[\s>]/i.test(s)) return false;
+    const names = GROK_SCAFFOLD_TAGS.join("|");
+    if (!new RegExp("^<(" + names + ")(\\s[^>]*)?>", "i").test(s)) return false;
+    let stripped = s;
+    for (let i = 0; i < GROK_SCAFFOLD_TAGS.length; i++) {
+      const name = GROK_SCAFFOLD_TAGS[i];
+      const block = new RegExp(
+        "<" + name + "(?:\\s[^>]*)?>[\\s\\S]*?<\\/" + name + ">",
+        "gi"
+      );
+      stripped = stripped.replace(block, "\n");
+      stripped = stripped.replace(
+        new RegExp("<\\/?" + name + "(?:\\s[^>]*)?>", "gi"),
+        "\n"
+      );
+    }
+    const leftover = stripped.replace(/\s+/g, " ").trim();
+    // Mostly tag-wrapped, or only trivial leftovers outside blocks.
+    return leftover.length < 80;
+  }
+
+  /** Collapsible card: summary "Grok thoughts", body = escaped original. */
+  function formatGrokThoughtsHTML(raw) {
+    const escaped = escapeHtml(raw == null ? "" : String(raw));
+    return (
+      '<details class="grok-thoughts">' +
+      '<summary class="grok-thoughts-summary">Grok thoughts</summary>' +
+      '<pre class="grok-thoughts-body">' +
+      escaped +
+      "</pre></details>"
+    );
+  }
+
+  /** Restyle an existing .msg bubble as Grok-attributed scaffolding. */
+  function presentAsGrokThoughts(msgEl) {
+    if (!msgEl || !msgEl.classList) return;
+    if (!msgEl.dataset.origRole) {
+      if (msgEl.classList.contains("user")) msgEl.dataset.origRole = "user";
+      else if (msgEl.classList.contains("system")) msgEl.dataset.origRole = "system";
+      else if (msgEl.classList.contains("assistant")) msgEl.dataset.origRole = "assistant";
+    }
+    msgEl.classList.remove("user", "system", "unknown");
+    msgEl.classList.add("assistant", "grok-thoughts-msg");
+    msgEl.dataset.scaffolding = "1";
+    const roleEl = msgEl.querySelector(".role");
+    if (roleEl) roleEl.textContent = "Grok";
+  }
+
+  function findScaffoldingMsgByContent(content) {
+    const want = String(content == null ? "" : content).trim();
+    if (!want) return null;
+    const nodes = els.feed.querySelectorAll(".msg.grok-thoughts-msg");
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const body = nodes[i].querySelector(".body");
+      const raw =
+        body && (body.dataset.raw != null ? body.dataset.raw : body.textContent);
+      if (String(raw || "").trim() === want) return nodes[i];
+    }
+    return null;
+  }
+
+
+  /** Escaped text → ATX headers, then bold. Tiny md subset only. */
+  function formatMdSubset(escaped) {
+    return formatBold(formatAtxHeaders(escaped));
+  }
+
+  /**
+   * XSS-safe message HTML: escape first, then ATX headers + bold; wrap
+   * complete <system-reminder> blocks (case-insensitive) as muted asides.
    * Complete <user_query>…</user_query> is unwrapped into the normal
    * message body (no labeled aside). Lone/unclosed tags stay escaped.
    */
@@ -763,11 +1164,11 @@
         '<aside class="sys-reminder" role="note">' +
         '<div class="sys-reminder-label">System reminder</div>' +
         '<div class="sys-reminder-body">' +
-        formatBold(escapeHtml(inner)) +
+        formatMdSubset(escapeHtml(inner)) +
         "</div></aside>"
       );
     }
-    return formatBold(escapeHtml(inner));
+    return formatMdSubset(escapeHtml(inner));
   }
 
   function formatMessageHTML(raw) {
@@ -779,13 +1180,13 @@
     let m;
     while ((m = re.exec(s)) !== null) {
       if (m.index > last) {
-        html += formatBold(escapeHtml(s.slice(last, m.index)));
+        html += formatMdSubset(escapeHtml(s.slice(last, m.index)));
       }
       html += formatTaggedAside(m[1], m[2]);
       last = m.index + m[0].length;
     }
     if (last < s.length) {
-      html += formatBold(escapeHtml(s.slice(last)));
+      html += formatMdSubset(escapeHtml(s.slice(last)));
     }
     return html;
   }
@@ -797,6 +1198,12 @@
     if (!body) return;
     const text = raw == null ? "" : String(raw);
     body.dataset.raw = text;
+    if (isGrokScaffolding(text)) {
+      body.innerHTML = formatGrokThoughtsHTML(text);
+      const msg = body.closest ? body.closest(".msg") : null;
+      if (msg) presentAsGrokThoughts(msg);
+      return;
+    }
     body.innerHTML = formatMessageHTML(text);
   }
 
@@ -813,18 +1220,36 @@
     return role;
   }
 
+  let suppressAutoScroll = false;
+
   function appendMsg(role, content, streaming) {
-    const follow = nearBottom();
+    const follow = !suppressAutoScroll && nearBottom();
     clearEmpty();
     const safeRole = safeMsgRole(role);
+    const text = content || "";
+    const scaffolding = !streaming && isGrokScaffolding(text);
+    const displayRole = scaffolding ? "assistant" : safeRole;
     const div = document.createElement("div");
-    div.className = "msg " + safeRole + (streaming ? " streaming" : "");
+    div.className =
+      "msg " +
+      displayRole +
+      (scaffolding ? " grok-thoughts-msg" : "") +
+      (streaming ? " streaming" : "");
+    if (scaffolding) {
+      div.dataset.scaffolding = "1";
+      div.dataset.origRole = safeRole;
+    }
     const roleEl = document.createElement("div");
     roleEl.className = "role";
-    roleEl.textContent = roleLabel(safeRole);
+    roleEl.textContent = scaffolding ? "Grok" : roleLabel(safeRole);
     const bodyEl = document.createElement("div");
     bodyEl.className = "body";
-    setMsgBody(bodyEl, content || "");
+    if (scaffolding) {
+      bodyEl.dataset.raw = text;
+      bodyEl.innerHTML = formatGrokThoughtsHTML(text);
+    } else {
+      setMsgBody(bodyEl, text);
+    }
     div.appendChild(roleEl);
     div.appendChild(bodyEl);
     els.feed.appendChild(div);
@@ -838,9 +1263,26 @@
     if (e) e.remove();
   }
 
-  function scrollFeed() {
-    els.feed.scrollTop = els.feed.scrollHeight;
+  /** Scroll feed to bottom. Use { instant: true } on session open so CSS
+   * scroll-behavior:smooth does not animate from the top of the transcript. */
+  function scrollFeed(opts) {
+    const instant = !!(opts && opts.instant);
+    const feed = els.feed;
+    if (instant) {
+      feed.style.scrollBehavior = "auto";
+      feed.scrollTop = feed.scrollHeight;
+      updateJumpBottom();
+      requestAnimationFrame(() => {
+        feed.style.scrollBehavior = "";
+      });
+      return;
+    }
+    feed.scrollTop = feed.scrollHeight;
     updateJumpBottom();
+  }
+
+  function pinFeedToBottom() {
+    scrollFeed({ instant: true });
   }
 
   function nearBottom() {
@@ -903,13 +1345,20 @@
       updateJumpBottom();
       return;
     }
-    msgs.forEach((m) => {
-      const el = appendMsg(m.role, m.content || "", false);
-      if (m.id) el.dataset.id = m.id;
-      if (m.tools && m.tools.length) renderTools(el, m.tools);
-      if (m.cancelled) markCancelled(el);
-    });
-    scrollFeed();
+    // Bulk-render without per-message follow scrolls, then pin instantly so the
+    // first paint is already at the latest message (no smooth scroll from top).
+    suppressAutoScroll = true;
+    try {
+      msgs.forEach((m) => {
+        const el = appendMsg(m.role, m.content || "", false);
+        if (m.id) el.dataset.id = m.id;
+        if (m.tools && m.tools.length) renderTools(el, m.tools);
+        if (m.cancelled) markCancelled(el);
+      });
+    } finally {
+      suppressAutoScroll = false;
+    }
+    pinFeedToBottom();
   }
 
   /** Merge server transcript into the feed without wiping scroll awkwardly. */
@@ -932,19 +1381,49 @@
     );
     msgs.forEach((m) => {
       if (m.id && have.has(m.id)) return;
-      if (m.role === "user" && adoptOptimisticUser(m.content, m.id)) {
-        if (m.id) have.add(m.id);
-        return;
+      if (m.role === "user") {
+        if (isGrokScaffolding(m.content || "")) {
+          const existingScaf = findScaffoldingMsgByContent(m.content || "");
+          if (existingScaf) {
+            if (m.id) {
+              existingScaf.dataset.id = m.id;
+              have.add(m.id);
+            }
+            return;
+          }
+        }
+        if (adoptOptimisticUser(m.content, m.id)) {
+          if (m.id) have.add(m.id);
+          return;
+        }
+        // Consecutive identical user bubble with a different id (Build live vs disk).
+        const userNodes = els.feed.querySelectorAll(".msg.user");
+        const lastUser = userNodes.length ? userNodes[userNodes.length - 1] : null;
+        if (lastUser) {
+          const body = lastUser.querySelector(".body");
+          const raw = body && (body.dataset.raw != null ? body.dataset.raw : body.textContent);
+          if (normalizeUserContent(raw || "") === normalizeUserContent(m.content || "")) {
+            const prevId = lastUser.dataset.id || "";
+            if (prevId && prevId.indexOf("build-live-") !== 0 && prevId !== m.id) {
+              // Distinct real server messages with same text — keep both.
+            } else {
+              if (m.id) {
+                lastUser.dataset.id = m.id;
+                have.add(m.id);
+              }
+              if (prevId) have.delete(prevId);
+              return;
+            }
+          }
+        }
       }
-      if (m.role === "assistant" && streamingEl && !streamingEl.dataset.id) {
-        streamingEl.classList.remove("streaming");
-        setMsgBody(streamingEl, m.content || "");
-        if (m.id) streamingEl.dataset.id = m.id;
-        if (m.tools && m.tools.length) renderTools(streamingEl, m.tools);
-        streamingEl = null;
-        streamingTools = null;
-        if (m.id) have.add(m.id);
-        return;
+      if (m.role === "assistant") {
+        // Live stream still open, or finished bubble with no/synthetic id after
+        // assistant_done + catchUp/snapshot (same class of bug as You-bubble dedupe).
+        if (adoptLiveAssistant(m.content, m.id, m.tools)) {
+          if (m.id) have.add(m.id);
+          return;
+        }
       }
       const el = appendMsg(m.role, m.content || "", false);
       if (m.id) {
@@ -975,16 +1454,130 @@
     }
   }
 
+  function sessionTitleFor(id) {
+    const s = sessions.find((x) => x.id === id);
+    const t = s && String(s.title || "").trim();
+    return t || "Grok Bridge";
+  }
+
+  function previewReply(content) {
+    let text = String(content || "").replace(/\s+/g, " ").trim();
+    if (!text) return "New reply";
+    if (text.length > 140) text = text.slice(0, 137) + "…";
+    return text;
+  }
+
+  function showPushHint(msg) {
+    if (!els.pushHint) return;
+    els.pushHint.textContent = msg || "";
+    els.pushHint.hidden = !msg;
+  }
+
+  function syncPushToggle() {
+    if (!els.pushToggle) return;
+    els.pushToggle.checked = !!pushEnabled;
+    if (!pushEnabled) {
+      showPushHint("");
+      return;
+    }
+    if (!("Notification" in window)) {
+      showPushHint("Notifications are not supported in this browser.");
+    } else if (Notification.permission === "denied") {
+      showPushHint("Permission denied — enable notifications in the browser site settings, then re-enable.");
+    } else if (!window.isSecureContext) {
+      showPushHint("Notifications need HTTPS (or localhost). Open Bridge via your Tailscale HTTPS URL.");
+    } else {
+      showPushHint("");
+    }
+  }
+
+  async function registerPushServiceWorker() {
+    if (!("serviceWorker" in navigator) || !window.isSecureContext) return null;
+    try {
+      pushSwReg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+      return pushSwReg;
+    } catch (err) {
+      console.warn("push SW register failed", err);
+      return null;
+    }
+  }
+
+  function resubscribeSessions() {
+    if (!wsIsOpen()) return;
+    if (pushEnabled && sessions.length) {
+      sessions.forEach((s) => {
+        if (s && s.id) subscribeSession(s.id);
+      });
+    } else if (activeId) {
+      subscribeSession(activeId);
+    }
+  }
+
+  function maybeNotifyReply(sessionId, content, data) {
+    if (!pushEnabled || !sessionId) return;
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    if (data && (data.cancelled || data.error === "cancelled")) return;
+    // Still looking at this chat — no toast.
+    if (isLooking(sessionId)) return;
+    const now = Date.now();
+    if (lastPushAt[sessionId] && now - lastPushAt[sessionId] < 12000) return;
+    lastPushAt[sessionId] = now;
+    const title = sessionTitleFor(sessionId);
+    const body = previewReply(content);
+    const url = location.pathname + location.search + "#s=" + encodeURIComponent(sessionId);
+    const payload = {
+      type: "show-notification",
+      title,
+      body,
+      icon: "/logo-192.png",
+      badge: "/favicon-32.png",
+      tag: "grok-bridge-" + sessionId,
+      data: { sessionId, url },
+    };
+    const showViaPage = () => {
+      try {
+        const n = new Notification(title, {
+          body,
+          icon: "/logo-192.png",
+          tag: "grok-bridge-" + sessionId,
+          data: { sessionId, url },
+        });
+        n.onclick = () => {
+          try { window.focus(); } catch (_) {}
+          openSession(sessionId).catch(() => {});
+          try { n.close(); } catch (_) {}
+        };
+      } catch (err) {
+        console.warn("Notification failed", err);
+      }
+    };
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+      try {
+        navigator.serviceWorker.controller.postMessage(payload);
+        return;
+      } catch (_) {}
+    }
+    if (pushSwReg && pushSwReg.active) {
+      try {
+        pushSwReg.active.postMessage(payload);
+        return;
+      } catch (_) {}
+    }
+    showViaPage();
+  }
+
   function syncGrokOnlyToggle() {
     if (!els.grokOnlyToggle) return;
     els.grokOnlyToggle.checked = includeGrokOnly;
   }
+
 
   function setSettingsOpen(open) {
     if (!els.settingsModal || !els.btnSettings) return;
     els.settingsModal.hidden = !open;
     els.btnSettings.setAttribute("aria-expanded", open ? "true" : "false");
     if (open && els.demoToggle) els.demoToggle.checked = DEMO;
+    if (open) syncPushToggle();
   }
 
   function isLooking(id) {
@@ -1008,7 +1601,12 @@
       if (countsPrimed && prev != null && next > prev) {
         const recentSelf = selfSendAt[s.id] && (Date.now() - selfSendAt[s.id] < 8000) && next === prev + 1;
         if (isLooking(s.id)) clearUnread(s.id);
-        else if (!recentSelf) markUnread(s.id);
+        else if (!recentSelf) {
+          const wasUnread = unreadIds.has(s.id);
+          markUnread(s.id);
+          // Fallback when WS did not deliver assistant_done for this session.
+          if (!wasUnread) maybeNotifyReply(s.id, "", null);
+        }
       }
       seenCounts[s.id] = next;
     });
@@ -1030,9 +1628,12 @@
     const res = await api("/api/sessions" + q);
     const data = await res.json();
     sessions = data.sessions || [];
+    if (data.usage) updateUsageMeter(data.usage);
     noteSessionCounts(sessions);
     syncGrokOnlyToggle();
+    syncPushToggle();
     renderSessionList();
+    if (pushEnabled) resubscribeSessions();
   }
 
   function relativeTime(ts) {
@@ -1100,56 +1701,129 @@
     }
   }
 
+  const OLDER_AFTER_SEC = 7 * 86400;
+  let olderOpen = false;
+
+  function sessionEpoch(s) {
+    const raw = s && (s.updated_at || s.created_at);
+    if (raw == null || raw === "") return 0;
+    if (typeof raw === "number") return raw > 1e12 ? raw / 1000 : raw;
+    const ms = Date.parse(raw);
+    return Number.isNaN(ms) ? 0 : ms / 1000;
+  }
+
+  function isOlderSession(s) {
+    const sec = sessionEpoch(s);
+    if (!sec) return false;
+    return (Date.now() / 1000 - sec) >= OLDER_AFTER_SEC;
+  }
+
+  function sessionRow(s) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    const build = isBuildSession(s);
+    const unread = unreadIds.has(s.id);
+    btn.className = "session-item" + (s.id === activeId ? " active" : "") + (build ? " build" : "") + (unread ? " unread" : "");
+    if (unread) btn.setAttribute("aria-label", (s.title || "Untitled") + ", unread");
+    btn.innerHTML = '<div class="t-row"><div class="t"></div></div><div class="m"></div>';
+    if (unread) {
+      const dot = document.createElement("span");
+      dot.className = "unread-dot";
+      dot.setAttribute("aria-hidden", "true");
+      btn.appendChild(dot);
+    }
+    btn.querySelector(".t").textContent = s.title || "Untitled";
+    if (build && !s.grok_only) {
+      const badge = document.createElement("span");
+      badge.className = "src-badge build";
+      badge.textContent = "Build";
+      badge.title = "Grok Build session";
+      btn.querySelector(".t-row").appendChild(badge);
+    }
+    if (s.grok_only) {
+      const badge = document.createElement("span");
+      const kind = String(s.session_kind || "").toLowerCase();
+      const isFork = kind === "fork" || kind.indexOf("fork") !== -1;
+      badge.className = "src-badge subagent" + (isFork ? " fork" : "");
+      badge.textContent = isFork ? "Subagent fork" : "Subagent";
+      badge.title = isFork
+        ? "Subagent fork — agent-to-agent child session"
+        : "Subagent — agent-to-agent child session";
+      btn.querySelector(".t-row").appendChild(badge);
+    }
+    if (s.parent_session_id) {
+      const parentId = String(s.parent_session_id).indexOf("build:") === 0
+        ? String(s.parent_session_id)
+        : "build:" + String(s.parent_session_id);
+      const parentJump = document.createElement("span");
+      parentJump.className = "parent-jump";
+      parentJump.textContent = "Parent";
+      parentJump.title = "Open parent Build chat";
+      parentJump.setAttribute("role", "link");
+      parentJump.tabIndex = 0;
+      const goParent = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openSession(parentId);
+      };
+      parentJump.addEventListener("click", goParent);
+      parentJump.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") goParent(e);
+      });
+      btn.querySelector(".t-row").appendChild(parentJump);
+    }
+    const meta = btn.querySelector(".m");
+    const count = (s.message_count || 0) + " msg";
+    const rel = relativeTime(s.updated_at || s.created_at);
+    meta.textContent = "";
+    const c = document.createElement("span");
+    c.textContent = count;
+    meta.appendChild(c);
+    if (rel) {
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.setAttribute("aria-hidden", "true");
+      meta.appendChild(dot);
+      const r = document.createElement("span");
+      r.textContent = rel;
+      meta.appendChild(r);
+    }
+    btn.onclick = () => openSession(s.id);
+    return btn;
+  }
+
   function renderSessionList() {
     els.sessionList.innerHTML = "";
-    sessions.forEach((s) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      const build = isBuildSession(s);
-      const unread = unreadIds.has(s.id);
-      btn.className = "session-item" + (s.id === activeId ? " active" : "") + (build ? " build" : "") + (unread ? " unread" : "");
-      if (unread) btn.setAttribute("aria-label", (s.title || "Untitled") + ", unread");
-      btn.innerHTML = '<div class="t-row"><div class="t"></div></div><div class="m"></div>';
-      if (unread) {
-        const dot = document.createElement("span");
-        dot.className = "unread-dot";
-        dot.setAttribute("aria-hidden", "true");
-        btn.appendChild(dot);
-      }
-      btn.querySelector(".t").textContent = s.title || "Untitled";
-      if (build) {
-        const badge = document.createElement("span");
-        badge.className = "src-badge build";
-        badge.textContent = "Build";
-        badge.title = "Grok Build session";
-        btn.querySelector(".t-row").appendChild(badge);
-      }
-      if (s.grok_only) {
-        const badge = document.createElement("span");
-        badge.className = "src-badge grok-only";
-        badge.textContent = "Grok only";
-        badge.title = "No human turn — agent-to-agent prompt";
-        btn.querySelector(".t-row").appendChild(badge);
-      }
-      const meta = btn.querySelector(".m");
-      const count = (s.message_count || 0) + " msg";
-      const rel = relativeTime(s.updated_at);
-      meta.textContent = "";
-      const c = document.createElement("span");
-      c.textContent = count;
-      meta.appendChild(c);
-      if (rel) {
-        const dot = document.createElement("span");
-        dot.className = "dot";
-        dot.setAttribute("aria-hidden", "true");
-        meta.appendChild(dot);
-        const r = document.createElement("span");
-        r.textContent = rel;
-        meta.appendChild(r);
-      }
-      btn.onclick = () => openSession(s.id);
-      els.sessionList.appendChild(btn);
-    });
+    const recent = [];
+    const older = [];
+    sessions.forEach((s) => (isOlderSession(s) ? older : recent).push(s));
+    recent.forEach((s) => els.sessionList.appendChild(sessionRow(s)));
+    if (!older.length) return;
+    const activeIsOlder = older.some((s) => s.id === activeId);
+    const expanded = olderOpen || activeIsOlder;
+    const wrap = document.createElement("div");
+    wrap.className = "older-group";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "older-toggle";
+    toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+    toggle.setAttribute("aria-controls", "olderSessionList");
+    const n = older.length;
+    const label = "Older — " + n + " chat" + (n === 1 ? "" : "s");
+    toggle.innerHTML = '<span class="older-chevron" aria-hidden="true"></span><span class="older-label"></span>';
+    toggle.querySelector(".older-label").textContent = label;
+    const list = document.createElement("div");
+    list.id = "olderSessionList";
+    list.className = "older-list";
+    list.hidden = !expanded;
+    older.forEach((s) => list.appendChild(sessionRow(s)));
+    toggle.onclick = () => {
+      olderOpen = !expanded;
+      renderSessionList();
+    };
+    wrap.appendChild(toggle);
+    wrap.appendChild(list);
+    els.sessionList.appendChild(wrap);
   }
 
   async function openSession(id) {
@@ -1174,13 +1848,41 @@
   }
 
   async function newSession() {
+    const payload = DEMO
+      ? { title: "Demo chat", demo: true }
+      : { title: "New chat" };
     const res = await api("/api/sessions", {
       method: "POST",
-      body: JSON.stringify({ title: DEMO ? "Demo chat" : "New chat" }),
+      body: JSON.stringify(payload),
     });
-    const sess = await res.json();
+    const sess = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg = sess.hint || sess.error || "Could not create a Grok Build session";
+      showCreateError(msg);
+      return;
+    }
+    hideCreateError();
     await refreshSessions();
     await openSession(sess.id);
+  }
+
+  function showCreateError(msg) {
+    let banner = document.getElementById("newSessionError");
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "newSessionError";
+      banner.className = "build-ro-hint";
+      banner.setAttribute("role", "status");
+      const host = els.composer && els.composer.parentNode;
+      if (host) host.insertBefore(banner, els.composer);
+    }
+    banner.textContent = msg;
+    banner.hidden = false;
+  }
+
+  function hideCreateError() {
+    const banner = document.getElementById("newSessionError");
+    if (banner) banner.hidden = true;
   }
 
   async function sendMessage(text) {
@@ -1191,6 +1893,9 @@
     setTurnActive(true);
     try {
       if (wsIsOpen()) {
+        // Optimistic You bubble (same as HTTP path). user_message / mergeTranscript
+        // adoptOptimisticUser stamps data-id or retargets build-live → disk id.
+        appendMsg("user", text);
         ws.send(JSON.stringify({ type: "chat.send", session_id: activeId, content: text }));
         els.input.value = "";
         autosize();
@@ -1392,6 +2097,60 @@
     }
   });
 
+  if (els.pushToggle) {
+    syncPushToggle();
+    els.pushToggle.addEventListener("change", async () => {
+      const want = els.pushToggle.checked;
+      if (!want) {
+        pushEnabled = false;
+        localStorage.setItem(PUSH_KEY, "0");
+        showPushHint("");
+        syncPushToggle();
+        return;
+      }
+      if (!("Notification" in window)) {
+        els.pushToggle.checked = false;
+        pushEnabled = false;
+        localStorage.setItem(PUSH_KEY, "0");
+        showPushHint("Notifications are not supported in this browser.");
+        return;
+      }
+      if (!window.isSecureContext) {
+        els.pushToggle.checked = false;
+        pushEnabled = false;
+        localStorage.setItem(PUSH_KEY, "0");
+        showPushHint("Notifications need HTTPS (or localhost). Open Bridge via your Tailscale HTTPS URL.");
+        return;
+      }
+      let perm = Notification.permission;
+      if (perm === "default") {
+        try { perm = await Notification.requestPermission(); } catch (_) { perm = "denied"; }
+      }
+      if (perm !== "granted") {
+        els.pushToggle.checked = false;
+        pushEnabled = false;
+        localStorage.setItem(PUSH_KEY, "0");
+        showPushHint("Permission denied — enable notifications in the browser site settings, then re-enable.");
+        return;
+      }
+      pushEnabled = true;
+      localStorage.setItem(PUSH_KEY, "1");
+      showPushHint("");
+      await registerPushServiceWorker();
+      resubscribeSessions();
+      syncPushToggle();
+    });
+  }
+
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      const data = event.data || {};
+      if (data.type === "open-session" && data.sessionId) {
+        openSession(data.sessionId).catch(() => {});
+      }
+    });
+  }
+
   if (els.grokOnlyToggle) {
     syncGrokOnlyToggle();
     els.grokOnlyToggle.addEventListener("change", () => {
@@ -1400,6 +2159,7 @@
       refreshSessions().catch(() => {});
     });
   }
+
 
   if (els.demoToggle) {
     els.demoToggle.checked = DEMO;
@@ -1437,6 +2197,8 @@
     showInsecureBanner();
     await showEndpointBanner();
     await loadSessionOwner();
+    if (pushEnabled) await registerPushServiceWorker();
+    syncPushToggle();
     await ensurePaired(false);
     connectWs();
     await refreshSessions();

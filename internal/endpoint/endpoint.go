@@ -50,11 +50,12 @@ func PublicView(dataRoot string) map[string]any {
 		"source":         or(ep["source"], "tailscale"),
 		"url":            ep["url"],
 		"url_ip":         ep["url_ip"],
+		"scheme":         ep["scheme"],
 		"magicdns":       ep["magicdns"],
 		"tailscale_ipv4": ep["tailscale_ipv4"],
 		"port":           ep["port"],
 		"updated_at":     ep["updated_at"],
-		"hint":           "Bookmark url (MagicDNS). Host LAN DHCP IP is not the phone URL of record.",
+		"hint":           "Bookmark url (MagicDNS). Scheme matches hub SSL. Host LAN DHCP IP is not the phone URL of record.",
 	}
 }
 

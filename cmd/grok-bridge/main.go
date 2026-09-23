@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -31,16 +32,21 @@ func main() {
 		log.SetFlags(log.LstdFlags | log.Lshortfile)
 	}
 
+	// Resolve data dir and apply data/grok-bridge.env before TLS so
+	// GROK_BRIDGE_SSL_CERT/KEY take effect on restart.requested even when the
+	// supervisor process was started without those vars in its environment.
+	root := *dataDir
+	if root == "" {
+		root = sessions.DefaultDataDir()
+	}
+	loadProjectEnv(root)
+
 	cert, key := tlsutil.ResolvePaths(*sslCert, *sslKey, os.Getenv("GROK_BRIDGE_SSL_CERT"), os.Getenv("GROK_BRIDGE_SSL_KEY"))
 	tlsCfg, err := tlsutil.Load(cert, key)
 	if err != nil {
 		log.Fatalf("TLS: %v", err)
 	}
 
-	root := *dataDir
-	if root == "" {
-		root = sessions.DefaultDataDir()
-	}
 	store, err := sessions.NewStore(root)
 	if err != nil {
 		log.Fatalf("data dir: %v", err)
@@ -112,6 +118,33 @@ func main() {
 	}
 }
 
+
+// loadProjectEnv applies KEY=VAL from data/grok-bridge.env when the key is unset.
+// Lets GROK_BRIDGE_USER_NAME / GROK_BRIDGE_GROK_HOME / GROK_BRIDGE_SSL_* take
+// effect on restart.requested even if systemd still runs the unit as root.
+func loadProjectEnv(dataDir string) {
+	b, err := os.ReadFile(filepath.Join(dataDir, "grok-bridge.env"))
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if k == "" || os.Getenv(k) != "" {
+			continue
+		}
+		_ = os.Setenv(k, v)
+	}
+}
+
 func envPrefer(primary, fallback, def string) string {
 	if v := os.Getenv(primary); v != "" {
 		return v
@@ -130,10 +163,13 @@ func envOr(k, def string) string {
 }
 
 func envInt(k string, def int) int {
-	if v := os.Getenv(k); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
+	v := strings.TrimSpace(os.Getenv(k))
+	if v == "" {
+		return def
 	}
-	return def
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
 }
