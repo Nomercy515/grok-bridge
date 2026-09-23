@@ -53,6 +53,10 @@
     pushToggle: $("pushToggle"),
     pushHint: $("pushHint"),
     btnJumpBottom: $("btnJumpBottom"),
+    modelChipWrap: $("modelChipWrap"),
+    modelChipBtn: $("modelChipBtn"),
+    modelChipLabel: $("modelChipLabel"),
+    modelChipMenu: $("modelChipMenu"),
   };
 
   let token = localStorage.getItem(TOKEN_KEY) || "";
@@ -611,23 +615,11 @@
     const t = data.type;
     if (t === "hello") return;
     if (t === "session_created") {
-    
-  if (els.usageMeter) {
-    els.usageMeter.addEventListener("click", toggleUsageTip);
-    els.usageMeter.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter" || ev.key === " ") toggleUsageTip(ev);
-    });
-  }
-  document.addEventListener("click", (ev) => {
-    if (!usageTipOpen || !els.usageWrap) return;
-    if (els.usageWrap.contains(ev.target)) return;
-    closeUsageTip();
-  });
-  document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") closeUsageTip();
-  });
-
-  refreshSessions();
+      refreshSessions().then(() => {
+        if (data.session && data.session.id && data.session.id === activeId) {
+          refreshModelChip(activeId);
+        }
+      }).catch(() => {});
       return;
     }
     if (t === "session.snapshot") {
@@ -1826,6 +1818,139 @@
     els.sessionList.appendChild(wrap);
   }
 
+
+  let modelChipOpen = false;
+  let modelChipState = null; // last ModelState for active build session
+  let modelChipLoading = false;
+
+  function hideModelChip() {
+    modelChipOpen = false;
+    modelChipState = null;
+    if (els.modelChipWrap) els.modelChipWrap.hidden = true;
+    if (els.modelChipMenu) {
+      els.modelChipMenu.hidden = true;
+      els.modelChipMenu.innerHTML = "";
+    }
+    if (els.modelChipBtn) els.modelChipBtn.setAttribute("aria-expanded", "false");
+  }
+
+  function closeModelChipMenu() {
+    modelChipOpen = false;
+    if (els.modelChipMenu) els.modelChipMenu.hidden = true;
+    if (els.modelChipBtn) els.modelChipBtn.setAttribute("aria-expanded", "false");
+  }
+
+  function openModelChipMenu() {
+    if (!els.modelChipMenu || !modelChipState || !modelChipState.options || !modelChipState.options.length) return;
+    modelChipOpen = true;
+    els.modelChipMenu.hidden = false;
+    if (els.modelChipBtn) els.modelChipBtn.setAttribute("aria-expanded", "true");
+  }
+
+  function toggleModelChipMenu(ev) {
+    if (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+    if (modelChipOpen) closeModelChipMenu();
+    else openModelChipMenu();
+  }
+
+  function modelOptionLabel(opt) {
+    if (!opt) return "";
+    return (opt.name && String(opt.name).trim()) || String(opt.value || "");
+  }
+
+  function renderModelChip(state) {
+    if (!els.modelChipWrap || !els.modelChipBtn || !els.modelChipLabel || !els.modelChipMenu) return;
+    if (!state || state.available === false || !state.options || !state.options.length) {
+      hideModelChip();
+      return;
+    }
+    modelChipState = state;
+    const cur = state.current || "";
+    let label = cur;
+    for (const o of state.options) {
+      if (o && o.value === cur) {
+        label = modelOptionLabel(o);
+        break;
+      }
+    }
+    if (!label) label = modelOptionLabel(state.options[0]) || "Model";
+    els.modelChipLabel.textContent = label;
+    els.modelChipBtn.title = "Model: " + label;
+    els.modelChipMenu.innerHTML = "";
+    for (const o of state.options) {
+      if (!o || o.value == null) continue;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "model-chip-option" + (o.value === cur ? " is-current" : "");
+      btn.setAttribute("role", "option");
+      btn.setAttribute("aria-selected", o.value === cur ? "true" : "false");
+      btn.dataset.value = o.value;
+      const name = document.createElement("span");
+      name.textContent = modelOptionLabel(o);
+      btn.appendChild(name);
+      if (o.description) {
+        const desc = document.createElement("span");
+        desc.className = "model-chip-option-desc";
+        desc.textContent = o.description;
+        btn.appendChild(desc);
+      }
+      btn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        pickModel(o.value);
+      });
+      els.modelChipMenu.appendChild(btn);
+    }
+    els.modelChipWrap.hidden = false;
+    closeModelChipMenu();
+  }
+
+  async function refreshModelChip(sessionId) {
+    if (!sessionId || !isBuildSession(sessionId) || DEMO) {
+      hideModelChip();
+      return;
+    }
+    if (modelChipLoading) return;
+    modelChipLoading = true;
+    try {
+      const res = await api("/api/sessions/" + encodeURIComponent(sessionId) + "/models");
+      if (!res.ok) {
+        hideModelChip();
+        return;
+      }
+      const data = await res.json().catch(() => null);
+      if (sessionId !== activeId) return;
+      renderModelChip(data);
+    } catch (_) {
+      if (sessionId === activeId) hideModelChip();
+    } finally {
+      modelChipLoading = false;
+    }
+  }
+
+  async function pickModel(value) {
+    if (!activeId || !value || !isBuildSession(activeId)) return;
+    closeModelChipMenu();
+    try {
+      const res = await api("/api/sessions/" + encodeURIComponent(activeId) + "/model", {
+        method: "POST",
+        body: JSON.stringify({ value: value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        console.warn("model select failed", data.error || res.status);
+        return;
+      }
+      if (activeId) renderModelChip(data);
+    } catch (err) {
+      console.warn("model select failed", err);
+    }
+  }
+
+
   async function openSession(id) {
     activeId = id;
     clearUnread(id);
@@ -1844,6 +1969,8 @@
     setBuildSessionChrome(build);
     els.btnSend.disabled = false;
     setTurnActive(false);
+    if (build) refreshModelChip(id);
+    else hideModelChip();
     try { history.replaceState(null, "", (DEMO ? "/?demo=1" : "/") + "#s=" + encodeURIComponent(id)); } catch (_) {}
   }
 
@@ -2191,6 +2318,32 @@
     } catch (_) {
       setSessionOwner("");
     }
+  }
+
+
+  if (els.modelChipBtn) {
+    els.modelChipBtn.addEventListener("click", toggleModelChipMenu);
+  }
+  document.addEventListener("click", (ev) => {
+    if (modelChipOpen) {
+      if (els.modelChipWrap && els.modelChipWrap.contains(ev.target)) return;
+      closeModelChipMenu();
+    }
+    if (usageTipOpen && els.usageWrap && !els.usageWrap.contains(ev.target)) {
+      closeUsageTip();
+    }
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      closeModelChipMenu();
+      closeUsageTip();
+    }
+  });
+  if (els.usageMeter) {
+    els.usageMeter.addEventListener("click", toggleUsageTip);
+    els.usageMeter.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") toggleUsageTip(ev);
+    });
   }
 
   async function boot() {
