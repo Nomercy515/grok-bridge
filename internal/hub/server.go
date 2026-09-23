@@ -652,6 +652,14 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		s.handleCancelSession(w, r, sid)
 		return
 	}
+	if parts[1] == "models" && r.Method == http.MethodGet {
+		s.handleSessionModels(w, r, sid)
+		return
+	}
+	if parts[1] == "model" && (r.Method == http.MethodPut || r.Method == http.MethodPost) {
+		s.handleSetSessionModel(w, r, sid)
+		return
+	}
 	http.NotFound(w, r)
 }
 
@@ -686,6 +694,132 @@ func (s *Server) cancelTurn(sessionID string) bool {
 		return true
 	}
 	return false
+}
+
+func (s *Server) resolveRawACPSessionID(sid string) (string, bool) {
+	if raw, ok := buildsessions.StripPrefix(sid); ok {
+		return raw, true
+	}
+	s.buildRawMu.Lock()
+	raw := s.buildRaw[sid]
+	s.buildRawMu.Unlock()
+	if raw != "" {
+		return raw, true
+	}
+	return "", false
+}
+
+func (s *Server) ensureBuildLoaded(ctx context.Context, sid string) (string, error) {
+	raw, ok := s.resolveRawACPSessionID(sid)
+	if !ok {
+		return "", fmt.Errorf("not a Grok Build session")
+	}
+	if s.ACP == nil {
+		return "", fmt.Errorf("ACP manager not configured")
+	}
+	client := s.ACP.Client()
+	if len(client.ConfigOptions(raw)) > 0 {
+		return raw, nil
+	}
+	cwd := s.getCreatedCwd(sid)
+	if cwd == "" {
+		if _, c, err := buildsessions.ResolveMeta(sid); err == nil {
+			cwd = c
+		}
+	}
+	if cwd == "" {
+		return raw, nil // return stored/empty; caller reports unavailable
+	}
+	if err := client.LoadSession(ctx, raw, cwd); err != nil {
+		return raw, err
+	}
+	return raw, nil
+}
+
+func (s *Server) handleSessionModels(w http.ResponseWriter, r *http.Request, sid string) {
+	if _, isBuild := buildsessions.StripPrefix(sid); !isBuild {
+		writeJSON(w, 200, grokacp.ModelConfig{Available: false, Reason: "demo/bridge sessions have no ACP models"})
+		return
+	}
+	if s.getBuildSession(sid) == nil {
+		writeJSON(w, 404, map[string]any{"error": "not found"})
+		return
+	}
+	if s.ACP == nil {
+		writeJSON(w, 503, map[string]any{"error": "ACP unavailable", "available": false})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	raw, err := s.ensureBuildLoaded(ctx, sid)
+	if err != nil && raw == "" {
+		writeJSON(w, 503, map[string]any{"error": err.Error(), "available": false})
+		return
+	}
+	mc := s.ACP.Client().ModelConfig(raw)
+	if err != nil && !mc.Available {
+		mc.Reason = err.Error()
+	}
+	writeJSON(w, 200, mc)
+}
+
+func (s *Server) handleSetSessionModel(w http.ResponseWriter, r *http.Request, sid string) {
+	if _, isBuild := buildsessions.StripPrefix(sid); !isBuild {
+		writeJSON(w, 400, map[string]any{"error": "model selection requires a Grok Build session"})
+		return
+	}
+	if s.getBuildSession(sid) == nil {
+		writeJSON(w, 404, map[string]any{"error": "not found"})
+		return
+	}
+	if s.ACP == nil {
+		writeJSON(w, 503, map[string]any{"error": "ACP unavailable"})
+		return
+	}
+	body := readJSON(r)
+	value, _ := body["value"].(string)
+	if value == "" {
+		value, _ = body["model"].(string)
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		writeJSON(w, 400, map[string]any{"error": "value required"})
+		return
+	}
+	configID, _ := body["configId"].(string)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	raw, err := s.ensureBuildLoaded(ctx, sid)
+	if err != nil && raw == "" {
+		status := 500
+		if isAgentUnavailable(err) {
+			status = 503
+		}
+		writeJSON(w, status, map[string]any{"error": err.Error()})
+		return
+	}
+	client := s.ACP.Client()
+	if strings.TrimSpace(configID) == "" {
+		mc := client.ModelConfig(raw)
+		configID = mc.ConfigID
+	}
+	if configID == "" {
+		configID = "model"
+	}
+	opts, err := client.SetConfigOption(ctx, raw, configID, "id", value)
+	if err != nil {
+		status := 500
+		if isAgentUnavailable(err) {
+			status = 503
+		}
+		writeJSON(w, status, map[string]any{"error": err.Error()})
+		return
+	}
+	mc := grokacp.ModelConfigFromOptions(opts)
+	s.Hub.Broadcast(map[string]any{
+		"type": "session_models", "session_id": sid, "models": mc,
+	}, sid, nil)
+	writeJSON(w, 200, mc)
 }
 
 func (s *Server) handleCancelSession(w http.ResponseWriter, r *http.Request, sid string) {
