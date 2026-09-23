@@ -1,0 +1,109 @@
+/* Composer model chip (ACP-backed). Mock bar/switcher removed. */
+.model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border, #2a2a2a);
+  background: var(--bg-soft, #121212);
+  color: var(--text-dim, #b0b0b0);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  line-height: 1.2;
+  max-width: 160px;
+}
+.model-chip:hover {
+  color: var(--text, #f2f2f2);
+  border-color: var(--border-strong, #3a3a3a);
+}
+.model-chip:focus-visible {
+  outline: 2px solid var(--accent, #6ea8fe);
+  outline-offset: 1px;
+}
+.model-chip .chev {
+  font-size: 10px;
+  opacity: 0.7;
+}
+.model-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.composer-field-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  width: 100%;
+}
+.composer-field-row textarea {
+  flex: 1;
+  min-width: 0;
+}
+.model-chip-wrap {
+  flex: 0 0 auto;
+  position: relative;
+  align-self: flex-end;
+  margin-bottom: 2px;
+}
+.model-chip-wrap[hidden] {
+  display: none !important;
+}
+.model-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  min-width: 220px;
+  max-width: min(320px, 80vw);
+  max-height: 280px;
+  overflow: auto;
+  background: var(--bg-elevated, #0e0e0e);
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+  padding: 6px;
+  z-index: 40;
+}
+.model-menu-label,
+.model-menu-foot {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text-dim, #888);
+}
+.model-menu button.opt {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text, #f2f2f2);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.model-menu button.opt:hover {
+  background: var(--bg-soft, #1a1a1a);
+}
+.model-menu button.opt .check {
+  opacity: 0;
+  color: var(--accent, #6ea8fe);
+}
+.model-menu button.opt[aria-checked="true"] .check {
+  opacity: 1;
+}
+/* Legacy mock nodes — hide if an old deploy still injects them */
+.model-mock-switch,
+.model-bar {
+  display: none !important;
+}
