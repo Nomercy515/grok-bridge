@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -902,10 +903,25 @@ func (f *fakeBuildACP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			sid := "acp-created-1"
 			_ = conn.WriteJSON(map[string]any{
 				"jsonrpc": "2.0", "id": id,
-				"result": map[string]any{"sessionId": sid},
+				"result": map[string]any{
+					"sessionId": sid,
+					"configOptions": hubFakeModelOptions("model-fast"),
+				},
 			})
 		case "session/load":
-			_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": id, "result": nil})
+			_ = conn.WriteJSON(map[string]any{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]any{"configOptions": hubFakeModelOptions("model-fast")},
+			})
+		case "session/set_config_option":
+			val, _ := params["value"].(string)
+			if val == "" {
+				val = "model-fast"
+			}
+			_ = conn.WriteJSON(map[string]any{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]any{"configOptions": hubFakeModelOptions(val)},
+			})
 		case "session/prompt":
 			sid, _ := params["sessionId"].(string)
 			_ = conn.WriteJSON(map[string]any{
@@ -1170,3 +1186,123 @@ func TestNewSessionDemoStillHubNative(t *testing.T) {
 		t.Fatalf("source=%v", sess["source"])
 	}
 }
+
+func hubFakeModelOptions(current string) []any {
+	return []any{
+		map[string]any{
+			"configId": "model", "name": "Model", "category": "model", "type": "select",
+			"currentValue": current,
+			"options": []any{
+				map[string]any{"value": "model-fast", "name": "Fast"},
+				map[string]any{"value": "model-smart", "name": "Smart"},
+			},
+		},
+	}
+}
+
+func TestSessionModelsAPI(t *testing.T) {
+	cwd := t.TempDir()
+	t.Setenv("GROK_BRIDGE_GROK_HOME", t.TempDir())
+	t.Setenv("GROK_HOME", "")
+	mgr, _ := startFakeACP(t)
+	ts, _, _ := testServer(t, func(o *hub.Options) {
+		o.SeedDemo = false
+		o.ACP = mgr
+	})
+
+	payload, _ := json.Marshal(map[string]any{"title": "Models", "cwd": cwd})
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", bytes.NewReader(payload))
+	req.Header = authHeader()
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var sess map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&sess)
+	if res.StatusCode != 201 {
+		t.Fatalf("create status=%d body=%v", res.StatusCode, sess)
+	}
+	id, _ := sess["id"].(string)
+	if id == "" {
+		t.Fatal("missing id")
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, ts.URL+"/api/sessions/"+url.PathEscape(id)+"/models", nil)
+	req.Header = authHeader()
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var models map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&models)
+	if res.StatusCode != 200 {
+		t.Fatalf("GET models status=%d body=%v", res.StatusCode, models)
+	}
+	if models["config_id"] != "model" || models["current"] != "model-fast" {
+		t.Fatalf("models=%v", models)
+	}
+	opts, _ := models["options"].([]any)
+	if len(opts) < 2 {
+		t.Fatalf("options=%v", opts)
+	}
+
+	body, _ := json.Marshal(map[string]any{"value": "model-smart"})
+	req, _ = http.NewRequest(http.MethodPost, ts.URL+"/api/sessions/"+url.PathEscape(id)+"/model", bytes.NewReader(body))
+	req.Header = authHeader()
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	_ = json.NewDecoder(res.Body).Decode(&models)
+	if res.StatusCode != 200 {
+		t.Fatalf("POST model status=%d body=%v", res.StatusCode, models)
+	}
+	if models["current"] != "model-smart" {
+		t.Fatalf("after set: %v", models)
+	}
+
+	// Missing value -> 400
+	req, _ = http.NewRequest(http.MethodPost, ts.URL+"/api/sessions/"+url.PathEscape(id)+"/model", strings.NewReader(`{}`))
+	req.Header = authHeader()
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 400 {
+		t.Fatalf("want 400 got %d", res.StatusCode)
+	}
+
+	// Non-build session -> available:false
+	demo, _ := json.Marshal(map[string]any{"title": "Demo", "demo": true})
+	req, _ = http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", bytes.NewReader(demo))
+	req.Header = authHeader()
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var demoSess map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&demoSess)
+	res.Body.Close()
+	demoID, _ := demoSess["id"].(string)
+	req, _ = http.NewRequest(http.MethodGet, ts.URL+"/api/sessions/"+url.PathEscape(demoID)+"/models", nil)
+	req.Header = authHeader()
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var unavailable map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&unavailable)
+	if unavailable["available"] != false {
+		t.Fatalf("demo models=%v", unavailable)
+	}
+}
+

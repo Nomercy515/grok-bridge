@@ -18,8 +18,9 @@ type fakeACP struct {
 	upgrader websocket.Upgrader
 	secret   string
 
-	mu       sync.Mutex
-	sessions map[string]string // sessionId -> cwd
+	mu           sync.Mutex
+	sessions     map[string]string // sessionId -> cwd
+	currentModel string
 }
 
 func newFakeACP(secret string) *fakeACP {
@@ -72,10 +73,14 @@ func (f *fakeACP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			sid := "created-sess-1"
 			f.mu.Lock()
 			f.sessions[sid] = cwd
+			f.currentModel = "model-fast"
 			f.mu.Unlock()
 			_ = conn.WriteJSON(map[string]any{
 				"jsonrpc": "2.0", "id": id,
-				"result": map[string]any{"sessionId": sid},
+				"result": map[string]any{
+					"sessionId":     sid,
+					"configOptions": fakeModelConfigOptions("model-fast"),
+				},
 			})
 		case "session/load":
 			sid, _ := params["sessionId"].(string)
@@ -94,7 +99,34 @@ func (f *fakeACP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					},
 				},
 			})
-			_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": id, "result": nil})
+			f.mu.Lock()
+			cur := f.currentModel
+			if cur == "" {
+				cur = "model-fast"
+				f.currentModel = cur
+			}
+			f.mu.Unlock()
+			_ = conn.WriteJSON(map[string]any{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]any{"configOptions": fakeModelConfigOptions(cur)},
+			})
+		case "session/set_config_option":
+			cfgID, _ := params["configId"].(string)
+			val, _ := params["value"].(string)
+			if cfgID != "model" {
+				_ = conn.WriteJSON(map[string]any{
+					"jsonrpc": "2.0", "id": id,
+					"error": map[string]any{"code": -32602, "message": "unknown configId"},
+				})
+				break
+			}
+			f.mu.Lock()
+			f.currentModel = val
+			f.mu.Unlock()
+			_ = conn.WriteJSON(map[string]any{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]any{"configOptions": fakeModelConfigOptions(val)},
+			})
 		case "session/prompt":
 			sid, _ := params["sessionId"].(string)
 			prompt, _ := params["prompt"].([]any)
@@ -182,7 +214,7 @@ func TestClientLoadAndPrompt(t *testing.T) {
 	if err := c.EnsureConnected(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.LoadSession(ctx, "sess-1", "/tmp/proj"); err != nil {
+	if _, err := c.LoadSession(ctx, "sess-1", "/tmp/proj"); err != nil {
 		t.Fatal(err)
 	}
 	fake.mu.Lock()
@@ -235,12 +267,18 @@ func TestClientNewSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	sid, err := c.NewSession(ctx, "/tmp/new-proj")
+	sid, models, err := c.NewSession(ctx, "/tmp/new-proj")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sid != "created-sess-1" {
 		t.Fatalf("sessionId=%q", sid)
+	}
+	if models == nil || !models.Available() || models.Current != "model-fast" {
+		t.Fatalf("models=%+v", models)
+	}
+	if models.ConfigID != "model" || len(models.Options) < 2 {
+		t.Fatalf("models=%+v", models)
 	}
 	fake.mu.Lock()
 	if fake.sessions[sid] != "/tmp/new-proj" {
@@ -261,7 +299,7 @@ func TestClientNewSessionUnreachable(t *testing.T) {
 	defer c.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := c.NewSession(ctx, "/tmp/proj")
+	_, _, err := c.NewSession(ctx, "/tmp/proj")
 	if err == nil {
 		t.Fatal("expected error when agent unreachable")
 	}
@@ -285,5 +323,46 @@ func TestClientUnauthorized(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "grok agent") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func fakeModelConfigOptions(current string) []any {
+	return []any{
+		map[string]any{
+			"configId": "model", "name": "Model", "category": "model", "type": "select",
+			"currentValue": current,
+			"options": []any{
+				map[string]any{"value": "model-fast", "name": "Fast", "description": "Speedy"},
+				map[string]any{"value": "model-smart", "name": "Smart", "description": "Stronger"},
+			},
+		},
+	}
+}
+
+func TestClientSetConfigOption(t *testing.T) {
+	fake := newFakeACP("sekrit")
+	ts := httptest.NewServer(fake)
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	c := NewClient(Config{WSURL: wsURL, Secret: "sekrit", AutoStart: false})
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sid, models, err := c.NewSession(ctx, "/tmp/proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if models.Current != "model-fast" {
+		t.Fatalf("current=%q", models.Current)
+	}
+	updated, err := c.SetConfigOption(ctx, sid, models.ConfigID, "model-smart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated == nil || updated.Current != "model-smart" {
+		t.Fatalf("updated=%+v", updated)
+	}
+	if c.CachedModels(sid).Current != "model-smart" {
+		t.Fatalf("cache=%+v", c.CachedModels(sid))
 	}
 }

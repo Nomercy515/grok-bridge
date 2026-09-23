@@ -121,6 +121,13 @@
             enterkeyhint="send"
             aria-label="Message Grok Bridge"
           ></textarea>
+          <div class="model-chip-wrap" id="modelChipWrap" hidden>
+            <button type="button" class="model-chip" id="modelChipBtn" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelChipMenu" title="Model">
+              <span class="model-chip-label" id="modelChipLabel">Model</span>
+              <span class="model-chip-caret" aria-hidden="true">▴</span>
+            </button>
+            <div class="model-chip-menu" id="modelChipMenu" hidden role="listbox" aria-label="Available models"></div>
+          </div>
           <button type="submit" class="btn send" id="btnSend" disabled aria-label="Send message" title="Send">
             <span class="btn-label">Send</span>
             <svg class="icon-send" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
