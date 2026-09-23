@@ -1,3 +1,6 @@
+/* Ensure usage tip / menus clear the feed */
+.topbar { z-index: 30; }
+
 /* Composer model chip (ACP-backed). Mock bar/switcher removed. */
 .model-chip {
   display: inline-flex;
