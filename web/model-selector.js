@@ -1,6 +1,6 @@
 /**
  * Composer-chip model selector — loads real ACP models from the hub.
- * Chip only (mock bar + placement switcher removed).
+ * Always visible (this app is for Grok Build). Chip only — no mock bar.
  */
 (function () {
   const TOKEN_KEY = "grok_bridge_token";
@@ -22,10 +22,6 @@
     }
     const el = document.querySelector(".session-item.active");
     return el ? el.dataset.id || "" : "";
-  }
-
-  function isBuildId(id) {
-    return typeof id === "string" && id.indexOf("build:") === 0;
   }
 
   function ensureMarkup() {
@@ -70,6 +66,7 @@
 
     const chip = $("modelChip");
     if (chip) chip.title = "Model";
+    setChipVisible(true);
     return true;
   }
 
@@ -139,14 +136,20 @@
   }
 
   async function loadModels() {
+    setChipVisible(true);
     const id = activeSessionId();
-    if (!isBuildId(id)) {
-      setChipVisible(false);
-      current = { configId: "model", value: "", models: [], available: false, reason: "" };
-      closeMenus();
+    if (!id) {
+      current = {
+        configId: "model",
+        value: "",
+        models: [],
+        available: false,
+        reason: "Select a session to load models.",
+      };
+      loading = false;
+      renderMenu();
       return;
     }
-    setChipVisible(true);
     loading = true;
     renderMenu();
     try {
@@ -181,7 +184,7 @@
 
   async function setModel(modelId) {
     const id = activeSessionId();
-    if (!isBuildId(id) || !modelId) return;
+    if (!id || !modelId) return;
     closeMenus();
     const chipLabel = document.querySelector(".model-chip-label");
     if (chipLabel) chipLabel.textContent = labelFor(modelId);
