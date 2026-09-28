@@ -18,7 +18,8 @@
 
   function activeSessionId() {
     if (window.GrokBridge && typeof window.GrokBridge.getActiveId === "function") {
-      return window.GrokBridge.getActiveId();
+      const id = window.GrokBridge.getActiveId();
+      if (id) return id;
     }
     const el = document.querySelector(".session-item.active");
     return el ? el.dataset.id || "" : "";
@@ -61,6 +62,28 @@
     return m ? m.name : id || "Model";
   }
 
+  function chipDisplayText() {
+    const cur = current.value;
+    if (loading && !cur) return "…";
+    if (cur) return labelFor(cur);
+    if (!activeSessionId()) return "Model";
+    if (loading) return "…";
+    return "Model";
+  }
+
+  function updateChipLabel() {
+    const chipLabel = document.querySelector(".model-chip-label");
+    const btn = $("modelChip");
+    const text = chipDisplayText();
+    if (chipLabel) chipLabel.textContent = text;
+    if (btn) {
+      const tip = current.value
+        ? "Session model: " + labelFor(current.value)
+        : current.reason || "Choose session model";
+      btn.title = tip;
+    }
+  }
+
   function renderMenu() {
     const menu = $("modelMenuChip");
     if (!menu) return;
@@ -71,26 +94,36 @@
     } else if (!current.available || !(current.models || []).length) {
       html +=
         '<div class="model-menu-foot">' +
-        (current.reason || "No models from ACP for this session.") +
+        escapeHtml(current.reason || "No models from ACP for this session.") +
         "</div>";
+      if (cur) {
+        html +=
+          '<button type="button" class="opt" role="option" data-model="' +
+          escapeAttr(cur) +
+          '" aria-checked="true"><span>' +
+          escapeHtml(labelFor(cur)) +
+          '</span><span class="check" aria-hidden="true">✓</span></button>';
+      }
     } else {
       current.models.forEach((m) => {
         const checked = m.id === cur ? "true" : "false";
+        const group = m.group
+          ? '<span class="opt-group">' + escapeHtml(m.group) + "</span>"
+          : "";
         html +=
           '<button type="button" class="opt" role="option" data-model="' +
           escapeAttr(m.id) +
           '" aria-checked="' +
           checked +
-          '"><span>' +
+          '"><span class="opt-meta"><span>' +
           escapeHtml(m.name) +
+          "</span>" +
+          group +
           '</span><span class="check" aria-hidden="true">✓</span></button>';
       });
     }
     menu.innerHTML = html;
-    const chipLabel = document.querySelector(".model-chip-label");
-    if (chipLabel) {
-      chipLabel.textContent = current.available && cur ? labelFor(cur) : "Model";
-    }
+    updateChipLabel();
   }
 
   function escapeHtml(s) {
@@ -98,7 +131,7 @@
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
-      .replace(/\"/g, "&quot;");
+      .replace(/"/g, "&quot;");
   }
   function escapeAttr(s) {
     return escapeHtml(s).replace(/'/g, "&#39;");
@@ -145,7 +178,7 @@
         const err = await res.json().catch(() => ({}));
         current = {
           configId: "model",
-          value: "",
+          value: current.value || "",
           models: [],
           available: false,
           reason: err.error || "Failed to load models (" + res.status + ")",
@@ -156,7 +189,7 @@
     } catch (e) {
       current = {
         configId: "model",
-        value: "",
+        value: current.value || "",
         models: [],
         available: false,
         reason: (e && e.message) || "Failed to load models",

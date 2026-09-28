@@ -62,6 +62,14 @@
   const lastPushAt = Object.create(null);
   let pushSwReg = null;
   let activeId = null;
+
+  // Bridge for model-selector / rail tools (read by app-bridge-hooks.js).
+  window.GrokBridge = window.GrokBridge || {};
+  window.GrokBridge.getActiveId = function () { return activeId || ""; };
+  window.GrokBridge.isBuildSession = function (id) {
+    return typeof id === "string" && id.indexOf("build:") === 0;
+  };
+
   let ws = null;
   let streamingEl = null;
   let streamingTools = null;
@@ -608,6 +616,9 @@
   }
 
   function handleEvent(data) {
+    try {
+      window.dispatchEvent(new CustomEvent("grok-bridge:ws", { detail: data }));
+    } catch (_) {}
     const t = data.type;
     if (t === "hello") return;
     if (t === "session_created") {
@@ -1688,8 +1699,9 @@
 
   function setBuildSessionChrome(on) {
     if (els.ctxSub) {
-      els.ctxSub.hidden = !on;
-      els.ctxSub.textContent = on ? "via Grok Build" : "";
+      // Product: no "via Grok Build" under the context meter.
+      els.ctxSub.hidden = true;
+      els.ctxSub.textContent = "";
     }
     // Remove legacy composer banner if present
     const banner = document.getElementById("buildRoHint");
@@ -1733,13 +1745,7 @@
       btn.appendChild(dot);
     }
     btn.querySelector(".t").textContent = s.title || "Untitled";
-    if (build && !s.grok_only) {
-      const badge = document.createElement("span");
-      badge.className = "src-badge build";
-      badge.textContent = "Build";
-      badge.title = "Grok Build session";
-      btn.querySelector(".t-row").appendChild(badge);
-    }
+    // Build rail pill removed — app is Grok Build.
     if (s.grok_only) {
       const badge = document.createElement("span");
       const kind = String(s.session_kind || "").toLowerCase();
@@ -1828,6 +1834,9 @@
 
   async function openSession(id) {
     activeId = id;
+    try {
+      window.dispatchEvent(new CustomEvent("grok-bridge:session", { detail: { id: activeId } }));
+    } catch (_) {}
     clearUnread(id);
     renderSessionList();
     closeMenu();
