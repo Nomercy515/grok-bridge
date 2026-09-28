@@ -1476,3 +1476,7 @@ body.vv-pinned .app {
   .composer-hint { display: none; }
 }
 
+/* Keep send control centered with the composer field, including multiline growth. */
+.composer > .btn.send {
+  align-self: center;
+}
