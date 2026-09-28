@@ -1,6 +1,6 @@
 /**
  * Thin bridge between hub UI and model-selector (and future rail tools).
- * Keeps app.js untouched when GitHub MCP cannot push the large file.
+ * Keeps large app.js changes minimal: exposes active session + forwards WS.
  */
 (function () {
   function activeIdFromDom() {
@@ -8,14 +8,23 @@
     return el ? el.dataset.id || "" : "";
   }
 
-  window.GrokBridge = window.GrokBridge || {
-    getActiveId: activeIdFromDom,
-    isBuildSession: (id) => typeof id === "string" && id.indexOf("build:") === 0,
+  const prev = window.GrokBridge || {};
+  window.GrokBridge = {
+    getActiveId:
+      typeof prev.getActiveId === "function"
+        ? prev.getActiveId
+        : activeIdFromDom,
+    isBuildSession:
+      typeof prev.isBuildSession === "function"
+        ? prev.isBuildSession
+        : (id) => typeof id === "string" && id.indexOf("build:") === 0,
   };
 
   let lastId = "";
   function emitSessionIfChanged() {
-    const id = (window.GrokBridge.getActiveId && window.GrokBridge.getActiveId()) || activeIdFromDom();
+    const id =
+      (window.GrokBridge.getActiveId && window.GrokBridge.getActiveId()) ||
+      activeIdFromDom();
     if (id === lastId) return;
     lastId = id;
     try {
