@@ -12,6 +12,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/model-selector.css" />
 </head>
 <body>
   <div id="app" class="app">
@@ -75,7 +76,7 @@
         <div class="status-cluster" role="status" aria-live="polite">
           <div class="ctx-wrap">
             <span class="pill ctx-meter" id="ctxMeter" title="Session context">—</span>
-            <span class="ctx-sub" id="ctxSub" hidden>via Grok Build</span>
+            <span class="ctx-sub" id="ctxSub" hidden></span>
           </div>
           <div class="usage-wrap" id="usageWrap">
             <button type="button" class="pill usage-meter empty" id="usageMeter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-label="SuperGrok weekly usage" aria-expanded="false" aria-controls="usageTip" title="SuperGrok weekly usage">
@@ -121,12 +122,11 @@
             enterkeyhint="send"
             aria-label="Message Grok Bridge"
           ></textarea>
-          <div class="model-chip-wrap" id="modelChipWrap" hidden>
-            <button type="button" class="model-chip" id="modelChipBtn" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelChipMenu" title="Model">
-              <span class="model-chip-label" id="modelChipLabel">Model</span>
-              <span class="model-chip-caret" aria-hidden="true">▴</span>
+          <div class="model-chip-wrap" id="modelChipWrap">
+            <button type="button" class="model-chip" id="modelChip" aria-haspopup="listbox" aria-expanded="false" title="Model">
+              <span class="model-chip-label">Model</span><span class="chev" aria-hidden="true">▾</span>
             </button>
-            <div class="model-chip-menu" id="modelChipMenu" hidden role="listbox" aria-label="Available models"></div>
+            <div class="model-menu" id="modelMenuChip" hidden role="listbox" aria-label="Choose model"></div>
           </div>
           <button type="submit" class="btn send" id="btnSend" disabled aria-label="Send message" title="Send">
             <span class="btn-label">Send</span>
@@ -143,5 +143,7 @@
     </main>
   </div>
   <script src="/app.js"></script>
+  <script src="/app-bridge-hooks.js"></script>
+  <script src="/model-selector.js"></script>
 </body>
 </html>

@@ -130,8 +130,6 @@ type Server struct {
 	createdMu    sync.Mutex
 	createdBuild map[string]*sessions.Session // build:id overlay until disk appears
 	createdCwd   map[string]string            // raw or build:id -> cwd from session/new
-	modelsMu     sync.Mutex
-	buildModels  map[string]*grokacp.ModelState // build:id -> model selector state
 }
 
 func NewServer(opts Options) (*Server, error) {
@@ -202,7 +200,6 @@ func NewServer(opts Options) (*Server, error) {
 		buildRaw:     make(map[string]string),
 		createdBuild: make(map[string]*sessions.Session),
 		createdCwd:   make(map[string]string),
-		buildModels:  make(map[string]*grokacp.ModelState),
 	}
 	s.routes()
 	return s, nil
@@ -546,12 +543,11 @@ func (s *Server) createBuildSession(ctx context.Context, body map[string]any, ti
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	client := s.ACP.Client()
-	rawID, models, err := client.NewSession(ctx, cwd)
+	rawID, err := client.NewSession(ctx, cwd)
 	if err != nil {
 		return nil, err
 	}
 	bridgeID := buildsessions.WithPrefix(rawID)
-	s.cacheBuildModels(bridgeID, models)
 	sess, _ := buildsessions.Get(bridgeID)
 	if sess == nil {
 		if title == "" {
@@ -614,146 +610,6 @@ func (s *Server) getCreatedCwd(sid string) string {
 	return ""
 }
 
-func (s *Server) cacheBuildModels(bridgeID string, models *grokacp.ModelState) {
-	if bridgeID == "" || models == nil || !models.Available() {
-		return
-	}
-	cp := *models
-	cp.Options = append([]grokacp.ModelOption(nil), models.Options...)
-	s.modelsMu.Lock()
-	defer s.modelsMu.Unlock()
-	if s.buildModels == nil {
-		s.buildModels = make(map[string]*grokacp.ModelState)
-	}
-	s.buildModels[bridgeID] = &cp
-}
-
-func (s *Server) getCachedBuildModels(bridgeID string) *grokacp.ModelState {
-	s.modelsMu.Lock()
-	defer s.modelsMu.Unlock()
-	m := s.buildModels[bridgeID]
-	if m == nil {
-		return nil
-	}
-	cp := *m
-	cp.Options = append([]grokacp.ModelOption(nil), m.Options...)
-	return &cp
-}
-
-func (s *Server) resolveBuildCwd(sid, rawID string) string {
-	if cwd := s.getCreatedCwd(sid); cwd != "" {
-		return cwd
-	}
-	if _, c, err := buildsessions.ResolveMeta(sid); err == nil && c != "" {
-		return c
-	}
-	if s.ACP != nil {
-		if loaded, ok := s.ACP.Client().LoadedCwd(rawID); ok {
-			return loaded
-		}
-	}
-	return ""
-}
-
-func (s *Server) handleGetSessionModels(w http.ResponseWriter, r *http.Request, sid string) {
-	rawID, isBuild := buildsessions.StripPrefix(sid)
-	if !isBuild {
-		writeJSON(w, 200, map[string]any{"available": false, "reason": "not a build session"})
-		return
-	}
-	if s.getBuildSession(sid) == nil {
-		writeJSON(w, 200, map[string]any{"available": false, "reason": "session not found"})
-		return
-	}
-	if m := s.getCachedBuildModels(sid); m != nil && m.Available() {
-		writeJSON(w, 200, m)
-		return
-	}
-	if s.ACP == nil {
-		writeJSON(w, 200, map[string]any{"available": false, "reason": "models not available yet"})
-		return
-	}
-	cwd := s.resolveBuildCwd(sid, rawID)
-	if cwd == "" {
-		writeJSON(w, 200, map[string]any{"available": false, "reason": "models not loaded yet; send a message or recreate the session"})
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	models, err := s.ACP.Client().LoadSession(ctx, rawID, cwd)
-	if err != nil {
-		writeJSON(w, 200, map[string]any{"available": false, "reason": err.Error()})
-		return
-	}
-	if models != nil {
-		s.cacheBuildModels(sid, models)
-	}
-	if models == nil || !models.Available() {
-		writeJSON(w, 200, map[string]any{"available": false, "reason": "agent did not advertise model options"})
-		return
-	}
-	writeJSON(w, 200, models)
-}
-
-func (s *Server) handleSetSessionModel(w http.ResponseWriter, r *http.Request, sid string) {
-	rawID, isBuild := buildsessions.StripPrefix(sid)
-	if !isBuild {
-		writeJSON(w, 400, map[string]any{"error": "model selection only supported on build sessions"})
-		return
-	}
-	if s.getBuildSession(sid) == nil {
-		writeJSON(w, 404, map[string]any{"error": "not found"})
-		return
-	}
-	body := readJSON(r)
-	value, _ := body["value"].(string)
-	value = strings.TrimSpace(value)
-	if value == "" {
-		writeJSON(w, 400, map[string]any{"error": "value required"})
-		return
-	}
-	cached := s.getCachedBuildModels(sid)
-	if cached == nil || cached.ConfigID == "" {
-		cwd := s.resolveBuildCwd(sid, rawID)
-		if cwd != "" && s.ACP != nil {
-			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-			models, err := s.ACP.Client().LoadSession(ctx, rawID, cwd)
-			cancel()
-			if err == nil && models != nil {
-				s.cacheBuildModels(sid, models)
-				cached = models
-			}
-		}
-	}
-	if cached == nil || !cached.Available() {
-		writeJSON(w, 501, map[string]any{"error": "no model config on this session"})
-		return
-	}
-	if cached.ConfigID == "" {
-		writeJSON(w, 501, map[string]any{"error": "legacy model list has no configId; cannot set via ACP"})
-		return
-	}
-	if s.ACP == nil {
-		writeJSON(w, 503, map[string]any{"error": "ACP manager not configured"})
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	defer cancel()
-	models, err := s.ACP.Client().SetConfigOption(ctx, rawID, cached.ConfigID, value)
-	if err != nil {
-		writeJSON(w, 502, map[string]any{"error": err.Error()})
-		return
-	}
-	if models == nil {
-		cp := *cached
-		cp.Current = value
-		cp.Options = append([]grokacp.ModelOption(nil), cached.Options...)
-		models = &cp
-	}
-	s.cacheBuildModels(sid, models)
-	writeJSON(w, 200, models)
-}
-
 func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 	parts := strings.Split(rest, "/")
@@ -797,10 +653,10 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if parts[1] == "models" && r.Method == http.MethodGet {
-		s.handleGetSessionModels(w, r, sid)
+		s.handleSessionModels(w, r, sid)
 		return
 	}
-	if parts[1] == "model" && r.Method == http.MethodPost {
+	if parts[1] == "model" && (r.Method == http.MethodPut || r.Method == http.MethodPost) {
 		s.handleSetSessionModel(w, r, sid)
 		return
 	}
@@ -838,6 +694,132 @@ func (s *Server) cancelTurn(sessionID string) bool {
 		return true
 	}
 	return false
+}
+
+func (s *Server) resolveRawACPSessionID(sid string) (string, bool) {
+	if raw, ok := buildsessions.StripPrefix(sid); ok {
+		return raw, true
+	}
+	s.buildRawMu.Lock()
+	raw := s.buildRaw[sid]
+	s.buildRawMu.Unlock()
+	if raw != "" {
+		return raw, true
+	}
+	return "", false
+}
+
+func (s *Server) ensureBuildLoaded(ctx context.Context, sid string) (string, error) {
+	raw, ok := s.resolveRawACPSessionID(sid)
+	if !ok {
+		return "", fmt.Errorf("not a Grok Build session")
+	}
+	if s.ACP == nil {
+		return "", fmt.Errorf("ACP manager not configured")
+	}
+	client := s.ACP.Client()
+	if len(client.ConfigOptions(raw)) > 0 {
+		return raw, nil
+	}
+	cwd := s.getCreatedCwd(sid)
+	if cwd == "" {
+		if _, c, err := buildsessions.ResolveMeta(sid); err == nil {
+			cwd = c
+		}
+	}
+	if cwd == "" {
+		return raw, nil // return stored/empty; caller reports unavailable
+	}
+	if err := client.LoadSession(ctx, raw, cwd); err != nil {
+		return raw, err
+	}
+	return raw, nil
+}
+
+func (s *Server) handleSessionModels(w http.ResponseWriter, r *http.Request, sid string) {
+	if _, isBuild := buildsessions.StripPrefix(sid); !isBuild {
+		writeJSON(w, 200, grokacp.ModelConfig{Available: false, Reason: "demo/bridge sessions have no ACP models"})
+		return
+	}
+	if s.getBuildSession(sid) == nil {
+		writeJSON(w, 404, map[string]any{"error": "not found"})
+		return
+	}
+	if s.ACP == nil {
+		writeJSON(w, 503, map[string]any{"error": "ACP unavailable", "available": false})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	raw, err := s.ensureBuildLoaded(ctx, sid)
+	if err != nil && raw == "" {
+		writeJSON(w, 503, map[string]any{"error": err.Error(), "available": false})
+		return
+	}
+	mc := s.ACP.Client().ModelConfig(raw)
+	if err != nil && !mc.Available {
+		mc.Reason = err.Error()
+	}
+	writeJSON(w, 200, mc)
+}
+
+func (s *Server) handleSetSessionModel(w http.ResponseWriter, r *http.Request, sid string) {
+	if _, isBuild := buildsessions.StripPrefix(sid); !isBuild {
+		writeJSON(w, 400, map[string]any{"error": "model selection requires a Grok Build session"})
+		return
+	}
+	if s.getBuildSession(sid) == nil {
+		writeJSON(w, 404, map[string]any{"error": "not found"})
+		return
+	}
+	if s.ACP == nil {
+		writeJSON(w, 503, map[string]any{"error": "ACP unavailable"})
+		return
+	}
+	body := readJSON(r)
+	value, _ := body["value"].(string)
+	if value == "" {
+		value, _ = body["model"].(string)
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		writeJSON(w, 400, map[string]any{"error": "value required"})
+		return
+	}
+	configID, _ := body["configId"].(string)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	raw, err := s.ensureBuildLoaded(ctx, sid)
+	if err != nil && raw == "" {
+		status := 500
+		if isAgentUnavailable(err) {
+			status = 503
+		}
+		writeJSON(w, status, map[string]any{"error": err.Error()})
+		return
+	}
+	client := s.ACP.Client()
+	if strings.TrimSpace(configID) == "" {
+		mc := client.ModelConfig(raw)
+		configID = mc.ConfigID
+	}
+	if configID == "" {
+		configID = "model"
+	}
+	opts, err := client.SetConfigOption(ctx, raw, configID, "id", value)
+	if err != nil {
+		status := 500
+		if isAgentUnavailable(err) {
+			status = 503
+		}
+		writeJSON(w, status, map[string]any{"error": err.Error()})
+		return
+	}
+	mc := grokacp.ModelConfigFromOptions(opts)
+	s.Hub.Broadcast(map[string]any{
+		"type": "session_models", "session_id": sid, "models": mc,
+	}, sid, nil)
+	writeJSON(w, 200, mc)
 }
 
 func (s *Server) handleCancelSession(w http.ResponseWriter, r *http.Request, sid string) {
@@ -1118,12 +1100,8 @@ func (s *Server) runBuildChat(parent context.Context, sessionID, content string,
 	if err := client.EnsureConnected(ctx); err != nil {
 		return "", err
 	}
-	models, err := client.LoadSession(ctx, rawID, cwd)
-	if err != nil {
+	if err := client.LoadSession(ctx, rawID, cwd); err != nil {
 		return "", fmt.Errorf("session/load: %w", err)
-	}
-	if models != nil {
-		s.cacheBuildModels(sessionID, models)
 	}
 
 	messageID := "build-live-" + strconv.FormatInt(time.Now().UnixNano(), 36)

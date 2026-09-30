@@ -82,13 +82,38 @@ git clone <this-repo> && cd grok-bridge
 # Pairing code is printed in the terminal on first start
 ```
 
-`start.sh` auto-checks and installs Go (≥ 1.22), curl, and git when possible (set `SKIP_PREREQ_INSTALL=1` to check only). Full Tailscale + systemd setup: `scripts/install.sh`.
+`start.sh` auto-checks and installs Go (≥ 1.22), curl, and git when possible (set `SKIP_PREREQ_INSTALL=1` to check only), then checks Grok Build readiness (`scripts/ensure-grok-build.sh`). If a required dep cannot be auto-installed, it prints numbered “Do this / re-run” steps and exits (optional TTY pause only when `GROK_BRIDGE_INSTALL_WAIT=1`). Full Tailscale + systemd setup: `./scripts/install.sh`. Windows: `.\start.ps1`. See **Native hosts** below.
 
 Supervised (recommended):
 
 ```bash
 ./scripts/supervise.sh
 ```
+
+
+## Native hosts (Linux / macOS / Windows)
+
+Run Bridge as a **source host** from this tree on all three OSes. `scripts/ensure-prereqs.sh`, `scripts/ensure-grok-build.sh`, and the Windows ensure/install scripts auto-install when safe. When a required dep cannot be auto-installed, they print numbered **“Do this / re-run”** steps and exit. They do not block on input unless stdin is a TTY **and** `GROK_BRIDGE_INSTALL_WAIT=1`. Non-interactive runs never wait. (`git` missing is a warning; start continues.)
+
+| OS | Start | Install / ensure |
+|----|-------|------------------|
+| Linux | `./start.sh` | `./scripts/install.sh` (Tailscale + systemd) |
+| macOS | `./start.sh` | `./scripts/install-macos.sh` (Homebrew; Tailscale cask) |
+| Windows | `.\start.ps1` | `.\scripts\install.ps1` (winget/choco/scoop when available) |
+
+On Windows, if ExecutionPolicy blocks the script: `powershell -ExecutionPolicy Bypass -File .\start.ps1` (or `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once). Same `-File` form for `.\scripts\install.ps1`.
+
+`./start.sh` / `.\start.ps1` check **Grok Build** early (before building the hub): `grok` on `PATH` or `GROK_BRIDGE_GROK_BIN`, and Grok home via `GROK_BRIDGE_GROK_HOME` → `GROK_HOME` → `$HOME/.grok` (Windows `%USERPROFILE%\.grok`). Missing `sessions/` only warns — hub-native chats still work.
+
+| Env | Meaning |
+|-----|---------|
+| `SKIP_GROK_BUILD_CHECK=1` | Skip the Build readiness check |
+| `REQUIRE_GROK_BUILD=1` | Fail if `grok` is missing. Unset: `./start.sh` / `.\start.ps1` and Linux `./scripts/install.sh` warn and continue. `./scripts/install-macos.sh` and `.\scripts\install.ps1` default this on |
+| `SKIP_PREREQ_INSTALL=1` | Check Go/curl/git only; do not auto-install |
+| `SKIP_TAILSCALE=1` | Skip Tailscale (Build-only host). Works on Linux install, macOS install, and `.\scripts\install.ps1` |
+| `GROK_BRIDGE_INSTALL_WAIT=1` | After the numbered steps, pause only on a TTY. Implemented in the ensure scripts above — not a global waiter |
+
+**Grok Build install remains vendor/manual** — this repo does not ship an unofficial `grok` installer. Linux `install.sh` stays warn-only so existing VM installs are not broken; pass `REQUIRE_GROK_BUILD=1` there to fail hard. Short matrix and Win/macOS smoke checklist: `docs/NATIVE_HOSTS.md`.
 
 ## Install (Linux VM / host)
 
@@ -148,6 +173,9 @@ This project does not invent other mesh, tunnel, or LAN auto-discovery paths.
 | Grok agent WS (Build ACP) | `ws://127.0.0.1:2419/ws` | `GROK_BRIDGE_GROK_AGENT_WS` |
 | Grok agent secret | — | `GROK_BRIDGE_GROK_AGENT_SECRET` (or `GROK_AGENT_SECRET`) |
 | Auto-start agent serve | off | `GROK_BRIDGE_GROK_AGENT_AUTO_START=1` (`grok` on PATH only) |
+| Skip Build check at start | off | `SKIP_GROK_BUILD_CHECK=1` |
+| Require `grok` at start | off (warn) on `./start.sh`, `.\start.ps1`, Linux `./scripts/install.sh` | `REQUIRE_GROK_BUILD=1` (hard-fail). Default on for `./scripts/install-macos.sh` and `.\scripts\install.ps1` only |
+| Grok binary override | PATH `grok` | `GROK_BRIDGE_GROK_BIN` |
 
 Never commit real secrets, webhook URLs, or sender keys. See `docs/AGENT_BRIDGE.md` and `docs/grok-bridge.env.example`.
 
