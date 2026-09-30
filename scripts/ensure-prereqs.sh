@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # Ensure local quick-start prerequisites (curl, Go ≥ 1.22, git).
 # Sourced by start.sh. Idempotent. Not a full Tailscale install — see scripts/install.sh.
+# macOS full host: scripts/install-macos.sh. Windows twins: ensure-prereqs.ps1 / start.ps1.
 #
 # Env:
 #   SKIP_PREREQ_INSTALL=1  — check only; exit 1 if curl/Go missing or Go too old
 #   GO_INSTALL_DIR         — default: $HOME/.local/go
 #   GO_MIN_VERSION         — default: 1.22
 #   GO_VERSION             — tarball version when installing (default: 1.22.12)
+#   GROK_BRIDGE_INSTALL_WAIT=1 — optional pause when a dep cannot be installed
+#                                (TTY + this flag only; non-interactive never blocks)
+#
+# When a required dep cannot be installed, this prints numbered "Do this / re-run"
+# steps (same pattern as ensure-grok-build.sh) and returns non-zero. It does not
+# block on read unless stdin is a TTY and GROK_BRIDGE_INSTALL_WAIT=1.
 #
 # When sourced, defines ensure_prereqs. When executed, runs it.
 
@@ -18,6 +25,28 @@ SKIP_PREREQ_INSTALL="${SKIP_PREREQ_INSTALL:-0}"
 _ensure_info() { echo "==> $*"; }
 _ensure_warn() { echo "warning: $*" >&2; }
 _ensure_err() { echo "error: $*" >&2; }
+
+# Same “wait for user / re-run” pattern as ensure-grok-build.sh _gb_wait_for_user.
+# Does not block on read unless stdin is a TTY and GROK_BRIDGE_INSTALL_WAIT=1.
+# Default return is 1 (prereq-only failure). Non-interactive still exits with the
+# numbered steps and does not wait.
+_pr_wait_for_user() {
+  local dep="$1"
+  shift
+  _ensure_err "missing ${dep}"
+  echo "Do this:" >&2
+  local i=1
+  local step
+  for step in "$@"; do
+    echo "  ${i}. ${step}" >&2
+    i=$((i + 1))
+  done
+  echo "Then re-run: ./start.sh   (or ./scripts/install.sh / ./scripts/install-macos.sh)" >&2
+  if [[ -t 0 && "${GROK_BRIDGE_INSTALL_WAIT:-0}" == "1" ]]; then
+    read -r -p "Press Enter after completing the steps (or Ctrl-C to abort)… " _ || true
+  fi
+  return 1
+}
 
 _pkg_install() {
   local pkgs=("$@")
@@ -112,14 +141,12 @@ _install_go_tarball() {
   arch="$(_detect_go_arch)"
   if [[ -z "$arch" ]]; then
     _ensure_err "unsupported CPU architecture '$(uname -m)' for automatic Go install"
-    _ensure_err "Install Go ≥ ${GO_MIN_VERSION} from https://go.dev/dl/ then re-run."
     return 1
   fi
   case "$os" in
     linux|darwin) ;;
     *)
       _ensure_err "unsupported OS '$os' for automatic Go install"
-      _ensure_err "Install Go ≥ ${GO_MIN_VERSION} from https://go.dev/dl/ then re-run."
       return 1
       ;;
   esac
@@ -153,16 +180,25 @@ _ensure_curl() {
     return 0
   fi
   if [[ "$SKIP_PREREQ_INSTALL" == "1" ]]; then
-    _ensure_err "curl is required but not found (SKIP_PREREQ_INSTALL=1)"
+    _pr_wait_for_user "curl" \
+      "Install curl with your package manager (apt, dnf, brew, …)." \
+      "This run has SKIP_PREREQ_INSTALL=1, so curl will not be installed automatically." \
+      || return $?
     return 1
   fi
   _ensure_info "Installing curl"
   if ! _pkg_install curl; then
-    _ensure_err "could not install curl — install it manually and re-run"
+    _pr_wait_for_user "curl" \
+      "Install curl with your package manager (apt, dnf, pacman, brew, …)." \
+      "Ensure curl is on PATH, then re-run." \
+      || return $?
     return 1
   fi
   if ! command -v curl >/dev/null 2>&1; then
-    _ensure_err "curl still not found after install attempt"
+    _pr_wait_for_user "curl" \
+      "curl was not found after the install attempt." \
+      "Install curl manually and ensure it is on PATH." \
+      || return $?
     return 1
   fi
 }
@@ -185,7 +221,11 @@ _ensure_go() {
   fi
 
   if [[ "$SKIP_PREREQ_INSTALL" == "1" ]]; then
-    _ensure_err "Go ≥ ${GO_MIN_VERSION} is required (SKIP_PREREQ_INSTALL=1)"
+    _pr_wait_for_user "Go ≥ ${GO_MIN_VERSION}" \
+      "Install Go ≥ ${GO_MIN_VERSION} from https://go.dev/dl/." \
+      "This run has SKIP_PREREQ_INSTALL=1, so Go will not be installed automatically." \
+      "Open a new shell so go is on PATH." \
+      || return $?
     return 1
   fi
 
@@ -206,14 +246,25 @@ _ensure_go() {
   fi
 
   if ! command -v curl >/dev/null 2>&1; then
-    _ensure_err "curl is required to download Go"
+    _pr_wait_for_user "curl" \
+      "curl is required to download Go." \
+      "Install curl, then re-run so Go ≥ ${GO_MIN_VERSION} can be fetched from https://go.dev/dl/." \
+      || return $?
     return 1
   fi
-  _install_go_tarball || return 1
+  if ! _install_go_tarball; then
+    _pr_wait_for_user "Go ≥ ${GO_MIN_VERSION}" \
+      "Automatic Go install failed. Install Go ≥ ${GO_MIN_VERSION} from https://go.dev/dl/." \
+      "Ensure ${GO_INSTALL_DIR}/bin (or the installer location) is on PATH." \
+      || return $?
+    return 1
+  fi
 
   if ! _go_ok; then
-    _ensure_err "Go ≥ ${GO_MIN_VERSION} still unavailable after install"
-    _ensure_err "Install from https://go.dev/dl/ then re-run (or set PATH to include ${GO_INSTALL_DIR}/bin)"
+    _pr_wait_for_user "Go ≥ ${GO_MIN_VERSION}" \
+      "Go ≥ ${GO_MIN_VERSION} is still unavailable after install." \
+      "Install from https://go.dev/dl/ and ensure PATH includes ${GO_INSTALL_DIR}/bin." \
+      || return $?
     return 1
   fi
   _ensure_info "Found Go $(_go_semver) ($(command -v go))"
@@ -225,15 +276,24 @@ _ensure_git() {
   fi
   if [[ "$SKIP_PREREQ_INSTALL" == "1" ]]; then
     _ensure_warn "git not found (SKIP_PREREQ_INSTALL=1) — continuing; go build may still work"
+    echo "Do this (optional):" >&2
+    echo "  1. Install git from your package manager or https://git-scm.com" >&2
+    echo "  2. Re-run ./start.sh if you want git on PATH" >&2
     return 0
   fi
   _ensure_info "Installing git"
   if ! _pkg_install git; then
     _ensure_warn "could not install git — continuing; go build may still work"
+    echo "Do this (optional):" >&2
+    echo "  1. Install git from your package manager or https://git-scm.com" >&2
+    echo "  2. Re-run ./start.sh if you want git on PATH" >&2
     return 0
   fi
   if ! command -v git >/dev/null 2>&1; then
     _ensure_warn "git still not found after install attempt — continuing"
+    echo "Do this (optional):" >&2
+    echo "  1. Install git from https://git-scm.com and ensure it is on PATH" >&2
+    echo "  2. Re-run ./start.sh if you want git on PATH" >&2
   fi
 }
 
