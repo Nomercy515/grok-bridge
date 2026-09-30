@@ -57,6 +57,8 @@
 
   let token = localStorage.getItem(TOKEN_KEY) || "";
   let sessions = [];
+  let lastBuildStatus = null; // from /api/sessions or /api/endpoint
+  let lastEndpoint = null;
   let includeGrokOnly = localStorage.getItem(GROK_ONLY_KEY) === "1";
   let pushEnabled = localStorage.getItem(PUSH_KEY) === "1";
   const lastPushAt = Object.create(null);
@@ -113,13 +115,12 @@
     }
   }
 
-  /** Show Tailscale MagicDNS phone URL from /api/endpoint (DHCP-resilient). */
+  /** Show Tailscale MagicDNS phone URL + hub identity from /api/endpoint. */
   async function showEndpointBanner() {
     try {
       const ep = await fetch("/api/endpoint").then((r) => r.json());
-      if (!ep || !ep.configured || !ep.url) return;
-      const parsed = parseAllowedEndpointUrl(ep.url);
-      if (!parsed) return;
+      lastEndpoint = ep || null;
+      if (ep && ep.build) lastBuildStatus = ep.build;
       let el = document.getElementById("endpointBanner");
       if (!el) {
         el = document.createElement("div");
@@ -131,19 +132,55 @@
       }
       el.textContent = "";
       const strong = document.createElement("strong");
-      strong.textContent = "Phone URL (Tailscale)";
-      const a = document.createElement("a");
-      a.href = parsed.href;
-      a.textContent = parsed.href;
+      strong.textContent = "This hub";
       el.appendChild(strong);
-      el.appendChild(a);
-      if (ep.magicdns) {
+
+      const idLine = document.createElement("div");
+      idLine.className = "endpoint-id";
+      const host = ep && ep.hostname ? String(ep.hostname) : "(unknown host)";
+      const listen = ep && ep.listen_addr ? String(ep.listen_addr) : "";
+      const ver = ep && ep.version ? String(ep.version) : "";
+      idLine.textContent = [host, listen && "listen " + listen, ver && "v" + ver].filter(Boolean).join(" · ");
+      el.appendChild(idLine);
+
+      if (ep && ep.configured && ep.url) {
+        const parsed = parseAllowedEndpointUrl(ep.url);
+        if (parsed) {
+          const a = document.createElement("a");
+          a.href = parsed.href;
+          a.textContent = parsed.href;
+          el.appendChild(a);
+        }
+      }
+
+      const buildNote = document.createElement("div");
+      buildNote.className = "muted";
+      buildNote.textContent = buildStatusSummary(ep && ep.build);
+      el.appendChild(buildNote);
+
+      if (ep && ep.magicdns) {
         const note = document.createElement("div");
         note.className = "muted";
-        note.textContent = "Bookmark MagicDNS — survives host DHCP changes.";
+        note.textContent = "Bookmark MagicDNS — one phone-facing hub; Build chats stay on that host.";
         el.appendChild(note);
       }
+      renderSessionList();
     } catch (_) { /* offline / no endpoint yet */ }
+  }
+
+  function buildStatusSummary(build) {
+    if (!build) return "Grok Build status unknown.";
+    const home = build.grok_home ? String(build.grok_home) : "(no Grok home)";
+    if (build.reason === "ok") {
+      return "Build chats: " + (build.session_count || 0) + " · " + home;
+    }
+    if (build.reason === "empty") {
+      return "Build chats: none yet · " + home;
+    }
+    if (build.reason === "missing_sessions_dir") {
+      return "Build chats unavailable — " + home + " has no sessions/ (wrong hub?).";
+    }
+    return "Build chats unavailable — no Grok home on this host (wrong Tailscale endpoint?).";
   }
 
   function authHeaders() {
@@ -1639,6 +1676,7 @@
     const res = await api("/api/sessions" + q);
     const data = await res.json();
     sessions = data.sessions || [];
+    if (data.build) lastBuildStatus = data.build;
     if (data.usage) updateUsageMeter(data.usage);
     noteSessionCounts(sessions);
     syncGrokOnlyToggle();
@@ -1798,11 +1836,45 @@
     return btn;
   }
 
+
+  function emptyBuildRailHint() {
+    const hasBuild = sessions.some((s) => isBuildSession(s));
+    if (hasBuild) return null;
+    const build = lastBuildStatus;
+    if (!build) return null;
+    // Only explain when Build is missing/empty — bridge-only list is easy to misread.
+    if (build.reason === "ok") return null;
+    const el = document.createElement("div");
+    el.className = "build-empty-hint";
+    el.setAttribute("role", "status");
+    const title = document.createElement("div");
+    title.className = "build-empty-title";
+    const body = document.createElement("div");
+    body.className = "build-empty-body";
+    if (build.reason === "missing_home") {
+      title.textContent = "No Grok Build chats on this hub";
+      body.textContent = "This host has no resolved Grok home. You may be on the wrong Tailscale endpoint — open the hub where Grok Build runs (see /api/endpoint).";
+    } else if (build.reason === "missing_sessions_dir") {
+      title.textContent = "Grok home has no sessions/";
+      body.textContent = (build.grok_home || "Grok home") + " is set but sessions/ is missing. Bookmark the phone URL for the machine that stores ~/.grok.";
+    } else if (build.reason === "empty") {
+      title.textContent = "No Build chats yet";
+      body.textContent = "Grok home is readable (" + (build.grok_home || "?") + ") but has no listable sessions.";
+    } else {
+      return null;
+    }
+    el.appendChild(title);
+    el.appendChild(body);
+    return el;
+  }
+
   function renderSessionList() {
     els.sessionList.innerHTML = "";
     const recent = [];
     const older = [];
     sessions.forEach((s) => (isOlderSession(s) ? older : recent).push(s));
+    const buildHint = emptyBuildRailHint();
+    if (buildHint) els.sessionList.appendChild(buildHint);
     recent.forEach((s) => els.sessionList.appendChild(sessionRow(s)));
     if (!older.length) return;
     const activeIsOlder = older.some((s) => s.id === activeId);
