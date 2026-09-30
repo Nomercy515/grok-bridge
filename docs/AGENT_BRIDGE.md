@@ -156,10 +156,10 @@ See `docs/UI_NOTES.md`. Events: `tool_call` / `tool_result` / optional `tool_car
 
 ## Grok Build ACP (live resume)
 
-Bridge-native webhook/demo sessions are unchanged. For `build:<uuid>` sessions the hub talks to a local `grok agent serve` over WebSocket JSON-RPC (ACP):
+Bridge-native webhook/demo sessions are unchanged (`POST /api/sessions` with `{demo:true}` or `/?demo=1`). For real chats, **New session** calls ACP `session/new` and returns `build:<uuid>` — it does **not** fall back to a hub-native session if the agent is down (503 + hint). For those ids the hub talks to a local `grok agent serve` over WebSocket JSON-RPC (ACP):
 
 1. `initialize`
-2. `session/load` (raw UUID + `cwd` from `summary.json`)
+2. `session/new` (cwd + empty `mcpServers`; Grok `_meta.yoloMode`) on create, or `session/load` (raw UUID + `cwd` from `summary.json`) when opening an existing chat
 3. `session/prompt` → stream `session/update` → Bridge `assistant_delta` / `tool_*` / `assistant_done`
 4. Cancel → ACP `session/cancel` notification
 

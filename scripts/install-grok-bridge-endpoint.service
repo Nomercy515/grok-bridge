@@ -13,7 +13,11 @@ Before=grok-bridge.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+User=__USER__
+Group=__GROUP__
 WorkingDirectory=__ROOT__
+Environment=HOME=__HOME__
+Environment=GROK_BRIDGE_GROK_HOME=__GROK_HOME__
 EnvironmentFile=-__ENV_FILE__
 Environment=GROK_BRIDGE_DATA=__DATA__
 Environment=GROK_BRIDGE_PORT=__PORT__

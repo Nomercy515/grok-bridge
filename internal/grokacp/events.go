@@ -55,10 +55,24 @@ func MapUpdate(bridgeSessionID string, update map[string]any) []BridgeEvent {
 		return []BridgeEvent{{
 			"type": et, "session_id": bridgeSessionID, "tool": tool,
 		}}
+	case "config_option_update":
+		mc := ModelConfigFromOptions(parseConfigOptions(mustRaw(update)))
+		return []BridgeEvent{{
+			"type": "session_models", "session_id": bridgeSessionID,
+			"models": mc,
+		}}
 	default:
 		// user_message_chunk, agent_thought_chunk, plan, etc. — ignore for Bridge UI
 		return nil
 	}
+}
+
+func mustRaw(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 func contentText(v any) string {
