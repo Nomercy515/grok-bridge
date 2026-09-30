@@ -38,8 +38,8 @@ type Client struct {
 	loadedMu sync.Mutex
 	loaded   map[string]string // rawSessionID -> cwd used at load
 
-	modelsMu sync.Mutex
-	models   map[string]*ModelState // rawSessionID -> last known model state
+	configMu sync.Mutex
+	configs  map[string][]ConfigOption // rawSessionID -> latest ACP configOptions
 }
 
 type rpcReply struct {
@@ -73,7 +73,7 @@ func NewClient(cfg Config) *Client {
 		pending: make(map[int64]chan rpcReply),
 		subs:    make(map[string][]chan map[string]any),
 		loaded:  make(map[string]string),
-		models:  make(map[string]*ModelState),
+		configs: make(map[string][]ConfigOption),
 	}
 }
 
@@ -170,19 +170,19 @@ func (c *Client) doInitialize(ctx context.Context) error {
 
 // NewSession creates a Grok Build session via ACP session/new.
 // cwd should be an absolute path (relative paths are resolved with filepath.Abs).
-// Returns the raw ACP session id (no build: prefix) and optional model state from configOptions.
-func (c *Client) NewSession(ctx context.Context, cwd string) (string, *ModelState, error) {
+// Returns the raw ACP session id (no build: prefix).
+func (c *Client) NewSession(ctx context.Context, cwd string) (string, error) {
 	if err := c.EnsureConnected(ctx); err != nil {
-		return "", nil, err
+		return "", err
 	}
 	cwd = strings.TrimSpace(cwd)
 	if cwd == "" {
-		return "", nil, fmt.Errorf("session/new: cwd required")
+		return "", fmt.Errorf("session/new: cwd required")
 	}
 	if !filepath.IsAbs(cwd) {
 		abs, err := filepath.Abs(cwd)
 		if err != nil {
-			return "", nil, fmt.Errorf("session/new: cwd: %w", err)
+			return "", fmt.Errorf("session/new: cwd: %w", err)
 		}
 		cwd = abs
 	}
@@ -193,18 +193,17 @@ func (c *Client) NewSession(ctx context.Context, cwd string) (string, *ModelStat
 	}
 	raw, err := c.request(ctx, "session/new", params)
 	if err != nil {
-		return "", nil, fmt.Errorf("session/new: %w", err)
+		return "", fmt.Errorf("session/new: %w", err)
 	}
 	sid := parseNewSessionID(raw)
 	if sid == "" {
-		return "", nil, fmt.Errorf("session/new: empty sessionId in %s", string(raw))
+		return "", fmt.Errorf("session/new: empty sessionId in %s", string(raw))
 	}
-	models := ParseModelState(raw)
 	c.loadedMu.Lock()
 	c.loaded[sid] = cwd
 	c.loadedMu.Unlock()
-	c.storeModels(sid, models)
-	return sid, models, nil
+	c.storeConfigOptions(sid, parseConfigOptions(raw), "session/new")
+	return sid, nil
 }
 
 func parseNewSessionID(raw json.RawMessage) string {
@@ -233,17 +232,15 @@ func (c *Client) LoadedCwd(rawSessionID string) (string, bool) {
 }
 
 // LoadSession resumes an existing Build session (raw UUID, not build: prefix).
-// Returns model state from the load result when present (or a previously cached state
-// if the session was already loaded with the same cwd).
-func (c *Client) LoadSession(ctx context.Context, rawSessionID, cwd string) (*ModelState, error) {
+func (c *Client) LoadSession(ctx context.Context, rawSessionID, cwd string) error {
 	if err := c.EnsureConnected(ctx); err != nil {
-		return nil, err
+		return err
 	}
 	c.loadedMu.Lock()
 	prev, ok := c.loaded[rawSessionID]
 	c.loadedMu.Unlock()
 	if ok && prev == cwd {
-		return c.getModels(rawSessionID), nil
+		return nil
 	}
 	params := map[string]any{
 		"sessionId":  rawSessionID,
@@ -259,79 +256,15 @@ func (c *Client) LoadSession(ctx context.Context, rawSessionID, cwd string) (*Mo
 	}()
 	raw, err := c.request(ctx, "session/load", params)
 	if err != nil {
-		return nil, fmt.Errorf("session/load: %w", err)
+		return fmt.Errorf("session/load: %w", err)
 	}
-	models := ParseModelState(raw)
 	c.loadedMu.Lock()
 	c.loaded[rawSessionID] = cwd
 	c.loadedMu.Unlock()
-	if models != nil {
-		c.storeModels(rawSessionID, models)
+	if opts := parseConfigOptions(raw); len(opts) > 0 {
+		c.storeConfigOptions(rawSessionID, opts, "session/load")
 	}
-	if models == nil {
-		models = c.getModels(rawSessionID)
-	}
-	return models, nil
-}
-
-// SetConfigOption calls ACP session/set_config_option and returns the updated model state
-// (parsed from the full configOptions list in the response).
-func (c *Client) SetConfigOption(ctx context.Context, sessionID, configID, value string) (*ModelState, error) {
-	if err := c.EnsureConnected(ctx); err != nil {
-		return nil, err
-	}
-	sessionID = strings.TrimSpace(sessionID)
-	configID = strings.TrimSpace(configID)
-	if sessionID == "" || configID == "" {
-		return nil, fmt.Errorf("session/set_config_option: sessionId and configId required")
-	}
-	params := map[string]any{
-		"sessionId": sessionID,
-		"configId":  configID,
-		"type":      "id",
-		"value":     value,
-	}
-	raw, err := c.request(ctx, "session/set_config_option", params)
-	if err != nil {
-		return nil, fmt.Errorf("session/set_config_option: %w", err)
-	}
-	models := ParseModelState(raw)
-	if models != nil {
-		c.storeModels(sessionID, models)
-	}
-	return models, nil
-}
-
-// CachedModels returns the last known model state for a raw ACP session id, if any.
-func (c *Client) CachedModels(rawSessionID string) *ModelState {
-	return c.getModels(rawSessionID)
-}
-
-func (c *Client) storeModels(rawSessionID string, models *ModelState) {
-	if rawSessionID == "" || models == nil {
-		return
-	}
-	c.modelsMu.Lock()
-	defer c.modelsMu.Unlock()
-	if c.models == nil {
-		c.models = make(map[string]*ModelState)
-	}
-	// Copy so callers can mutate safely.
-	cp := *models
-	cp.Options = append([]ModelOption(nil), models.Options...)
-	c.models[rawSessionID] = &cp
-}
-
-func (c *Client) getModels(rawSessionID string) *ModelState {
-	c.modelsMu.Lock()
-	defer c.modelsMu.Unlock()
-	m := c.models[rawSessionID]
-	if m == nil {
-		return nil
-	}
-	cp := *m
-	cp.Options = append([]ModelOption(nil), m.Options...)
-	return &cp
+	return nil
 }
 
 // Prompt sends session/prompt and returns a channel of Bridge events until the turn ends.
@@ -552,6 +485,90 @@ func (c *Client) request(ctx context.Context, method string, params any) (json.R
 	}
 }
 
+func (c *Client) storeConfigOptions(rawSessionID string, opts []ConfigOption, source string) {
+	if rawSessionID == "" {
+		return
+	}
+	c.configMu.Lock()
+	defer c.configMu.Unlock()
+	if c.configs == nil {
+		c.configs = make(map[string][]ConfigOption)
+	}
+	if len(opts) > 0 {
+		c.configs[rawSessionID] = opts
+	}
+	// Diagnostic: log shape (full raw truncated) especially on session/new.
+	if source == "session/new" || source == "session/load" {
+		log.Printf("grokacp: %s configOptions for %s: %s", source, rawSessionID, summarizeConfigOptions(opts))
+	}
+}
+
+func summarizeConfigOptions(opts []ConfigOption) string {
+	if len(opts) == 0 {
+		return "(none)"
+	}
+	parts := make([]string, 0, len(opts))
+	for _, o := range opts {
+		cur := strAny(o.CurrentValue)
+		parts = append(parts, fmt.Sprintf("%s[cat=%s type=%s cur=%s]", o.ConfigID, o.Category, o.Type, cur))
+	}
+	b, _ := json.Marshal(opts)
+	const max = 1200
+	s := string(b)
+	if len(s) > max {
+		s = s[:max] + "…"
+	}
+	return strings.Join(parts, ", ") + " raw=" + s
+}
+
+// ConfigOptions returns the last stored ACP configOptions for a raw session id.
+func (c *Client) ConfigOptions(rawSessionID string) []ConfigOption {
+	c.configMu.Lock()
+	defer c.configMu.Unlock()
+	out := c.configs[rawSessionID]
+	if out == nil {
+		return nil
+	}
+	cp := make([]ConfigOption, len(out))
+	copy(cp, out)
+	return cp
+}
+
+// ModelConfig returns the model selector extracted from stored configOptions.
+func (c *Client) ModelConfig(rawSessionID string) ModelConfig {
+	return ModelConfigFromOptions(c.ConfigOptions(rawSessionID))
+}
+
+// SetConfigOption calls ACP session/set_config_option and refreshes stored options.
+func (c *Client) SetConfigOption(ctx context.Context, rawSessionID, configID, valueType string, value any) ([]ConfigOption, error) {
+	if err := c.EnsureConnected(ctx); err != nil {
+		return nil, err
+	}
+	rawSessionID = strings.TrimSpace(rawSessionID)
+	configID = strings.TrimSpace(configID)
+	if rawSessionID == "" || configID == "" {
+		return nil, fmt.Errorf("session/set_config_option: sessionId and configId required")
+	}
+	if valueType == "" {
+		valueType = "id"
+	}
+	params := map[string]any{
+		"sessionId": rawSessionID,
+		"configId":  configID,
+		"type":      valueType,
+		"value":     value,
+	}
+	raw, err := c.request(ctx, "session/set_config_option", params)
+	if err != nil {
+		return nil, fmt.Errorf("session/set_config_option: %w", err)
+	}
+	opts := parseConfigOptions(raw)
+	if len(opts) > 0 {
+		c.storeConfigOptions(rawSessionID, opts, "session/set_config_option")
+	}
+	return c.ConfigOptions(rawSessionID), nil
+}
+
 func (c *Client) writeJSON(v any) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -634,6 +651,16 @@ func (c *Client) handleNotification(method string, params any) {
 		if upd == nil {
 			return
 		}
+		kind, _ := upd["sessionUpdate"].(string)
+		if kind == "" {
+			kind, _ = upd["session_update"].(string)
+		}
+		if kind == "config_option_update" {
+			raw, _ := json.Marshal(upd)
+			if opts := parseConfigOptions(raw); len(opts) > 0 {
+				c.storeConfigOptions(sid, opts, "config_option_update")
+			}
+		}
 		c.publishUpdate(sid, upd)
 	default:
 		// ignore _x.ai/* and other extensions
@@ -653,10 +680,6 @@ func (c *Client) failAll(err error) {
 	c.loadedMu.Lock()
 	c.loaded = make(map[string]string)
 	c.loadedMu.Unlock()
-
-	c.modelsMu.Lock()
-	c.models = make(map[string]*ModelState)
-	c.modelsMu.Unlock()
 
 	rpcErr := &rpcError{Code: -32000, Message: err.Error()}
 	for _, ch := range pending {
