@@ -27,6 +27,7 @@ import (
 	"grok-bridge/internal/buildsessions"
 	"grok-bridge/internal/endpoint"
 	"grok-bridge/internal/grokacp"
+	"grok-bridge/internal/grokusage"
 	"grok-bridge/internal/restart"
 	"grok-bridge/internal/sessions"
 )
@@ -121,10 +122,14 @@ type Server struct {
 	WebFS        fs.FS
 	Mux          *http.ServeMux
 	ACP          *grokacp.Manager
+	Usage        *grokusage.Cache
 	turnsMu      sync.Mutex
 	turns        map[string]context.CancelFunc // sessionID -> cancel active turn
 	buildRawMu   sync.Mutex
 	buildRaw     map[string]string // bridge build:id -> raw ACP session UUID (active turn)
+	createdMu    sync.Mutex
+	createdBuild map[string]*sessions.Session // build:id overlay until disk appears
+	createdCwd   map[string]string            // raw or build:id -> cwd from session/new
 }
 
 func NewServer(opts Options) (*Server, error) {
@@ -190,8 +195,11 @@ func NewServer(opts Options) (*Server, error) {
 		WebFS:        opts.WebFS,
 		Mux:          http.NewServeMux(),
 		ACP:          acpMgr,
+		Usage:        grokusage.NewCache(),
 		turns:        make(map[string]context.CancelFunc),
 		buildRaw:     make(map[string]string),
+		createdBuild: make(map[string]*sessions.Session),
+		createdCwd:   make(map[string]string),
 	}
 	s.routes()
 	return s, nil
@@ -323,11 +331,15 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/auth/status", func(w http.ResponseWriter, r *http.Request) {
 		body := s.Hub.Auth.Status()
 		body["endpoint"] = endpoint.PublicView(s.Hub.Store.Root)
+		if name := HostUserLabel(); name != "" {
+			body["user_name"] = name
+		}
 		writeJSON(w, 200, body)
 	})
 	s.Mux.HandleFunc("/api/auth/pair", s.handlePair)
 	s.Mux.HandleFunc("/api/auth/rotate", s.handleRotate)
 	s.Mux.HandleFunc("/api/auth/rotate-pairing", s.handleRotatePairing)
+	s.Mux.HandleFunc("/api/usage", s.handleUsage)
 	s.Mux.HandleFunc("/api/sessions", s.handleSessions)
 	s.Mux.HandleFunc("/api/sessions/", s.handleSessionByID)
 	s.Mux.HandleFunc("/api/control/restart", s.handleRestart)
@@ -380,23 +392,59 @@ func (s *Server) handleRotatePairing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "pairing_code": code})
 }
 
+
+func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	if s.Usage == nil {
+		writeJSON(w, 200, grokusage.Snapshot{Available: false, Source: "none", Reason: "usage cache not configured"})
+		return
+	}
+	writeJSON(w, 200, s.Usage.Snapshot(r.Context()))
+}
+
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, 200, map[string]any{"sessions": s.listMergedSessions()})
+		body := map[string]any{"sessions": s.listMergedSessions(r)}
+		if s.Usage != nil {
+			body["usage"] = s.Usage.Snapshot(r.Context())
+		}
+		writeJSON(w, 200, body)
 	case http.MethodPost:
 		body := readJSON(r)
 		title, _ := body["title"].(string)
-		sess, err := s.Hub.Store.Create(title)
-		if err != nil {
-			writeJSON(w, 500, map[string]any{"error": err.Error()})
+		if wantDemoSession(body, r) {
+			sess, err := s.Hub.Store.Create(title)
+			if err != nil {
+				writeJSON(w, 500, map[string]any{"error": err.Error()})
+				return
+			}
+			sess.Source = "bridge"
+			summary := map[string]any{
+				"id": sess.ID, "title": sess.Title,
+				"created_at": sess.CreatedAt, "updated_at": sess.UpdatedAt, "message_count": 0,
+				"source": "bridge",
+			}
+			s.Hub.Broadcast(map[string]any{"type": "session_created", "session": summary}, "", nil)
+			writeJSON(w, 201, sess)
 			return
 		}
-		sess.Source = "bridge"
+		sess, err := s.createBuildSession(r.Context(), body, title)
+		if err != nil {
+			status := 500
+			if isAgentUnavailable(err) {
+				status = 503
+			}
+			writeJSON(w, status, map[string]any{"error": err.Error(), "hint": agentHint(err)})
+			return
+		}
 		summary := map[string]any{
 			"id": sess.ID, "title": sess.Title,
 			"created_at": sess.CreatedAt, "updated_at": sess.UpdatedAt, "message_count": 0,
-			"source": "bridge",
+			"source": "build",
 		}
 		s.Hub.Broadcast(map[string]any{"type": "session_created", "session": summary}, "", nil)
 		writeJSON(w, 201, sess)
@@ -405,18 +453,161 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) listMergedSessions() []sessions.SessionSummary {
+func (s *Server) listMergedSessions(r *http.Request) []sessions.SessionSummary {
 	bridge := s.Hub.Store.ListSessions()
 	out := make([]sessions.SessionSummary, 0, len(bridge)+8)
 	for _, sum := range bridge {
 		sum.Source = "bridge"
 		out = append(out, sum)
 	}
-	out = append(out, buildsessions.List()...)
+	includeGrokOnly := false
+	if r != nil {
+		includeGrokOnly = buildsessions.QueryIncludesGrokOnly(r.URL.Query().Get("include"))
+	}
+	out = append(out, buildsessions.ListIncluding(includeGrokOnly)...)
+	seen := map[string]struct{}{}
+	for _, sum := range out {
+		seen[sum.ID] = struct{}{}
+	}
+	s.createdMu.Lock()
+	for id, sess := range s.createdBuild {
+		if sess == nil {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		out = append(out, sessions.SessionSummary{
+			ID: sess.ID, Title: sess.Title,
+			CreatedAt: sess.CreatedAt, UpdatedAt: sess.UpdatedAt,
+			MessageCount: len(sess.Messages), Source: "build",
+		})
+	}
+	s.createdMu.Unlock()
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})
 	return out
+}
+
+func wantDemoSession(body map[string]any, r *http.Request) bool {
+	if r != nil && r.URL.Query().Get("demo") == "1" {
+		return true
+	}
+	v, ok := body["demo"].(bool)
+	return ok && v
+}
+
+func resolveNewSessionCWD(body map[string]any) (string, error) {
+	if body != nil {
+		if v, _ := body["cwd"].(string); strings.TrimSpace(v) != "" {
+			cwd := strings.TrimSpace(v)
+			if !filepath.IsAbs(cwd) {
+				abs, err := filepath.Abs(cwd)
+				if err != nil {
+					return "", fmt.Errorf("cwd must be an absolute path")
+				}
+				cwd = abs
+			}
+			return cwd, nil
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("GROK_BRIDGE_CWD")); v != "" {
+		if !filepath.IsAbs(v) {
+			if abs, err := filepath.Abs(v); err == nil {
+				v = abs
+			}
+		}
+		return filepath.Clean(v), nil
+	}
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		return wd, nil
+	}
+	if h := buildsessions.GrokHome(); h != "" {
+		return h, nil
+	}
+	return "", fmt.Errorf("no working directory for new Grok Build session")
+}
+
+func (s *Server) createBuildSession(ctx context.Context, body map[string]any, title string) (*sessions.Session, error) {
+	if s.ACP == nil {
+		return nil, fmt.Errorf("cannot reach grok agent: ACP manager not configured")
+	}
+	cwd, err := resolveNewSessionCWD(body)
+	if err != nil {
+		return nil, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	client := s.ACP.Client()
+	rawID, err := client.NewSession(ctx, cwd)
+	if err != nil {
+		return nil, err
+	}
+	bridgeID := buildsessions.WithPrefix(rawID)
+	sess, _ := buildsessions.Get(bridgeID)
+	if sess == nil {
+		if title == "" {
+			title = "New chat"
+		}
+		now := float64(time.Now().UnixNano()) / 1e9
+		sess = &sessions.Session{
+			ID:        bridgeID,
+			Title:     title,
+			CreatedAt: now,
+			UpdatedAt: now,
+			Messages:  []sessions.Message{},
+			Source:    "build",
+		}
+	}
+	s.rememberCreated(sess, cwd)
+	return sess, nil
+}
+
+func (s *Server) rememberCreated(sess *sessions.Session, cwd string) {
+	if sess == nil {
+		return
+	}
+	s.createdMu.Lock()
+	defer s.createdMu.Unlock()
+	if s.createdBuild == nil {
+		s.createdBuild = make(map[string]*sessions.Session)
+	}
+	if s.createdCwd == nil {
+		s.createdCwd = make(map[string]string)
+	}
+	s.createdBuild[sess.ID] = sess
+	if cwd == "" {
+		return
+	}
+	s.createdCwd[sess.ID] = cwd
+	if raw, ok := buildsessions.StripPrefix(sess.ID); ok {
+		s.createdCwd[raw] = cwd
+	}
+}
+
+func (s *Server) getBuildSession(sid string) *sessions.Session {
+	if sess, err := buildsessions.Get(sid); err == nil && sess != nil {
+		return sess
+	}
+	s.createdMu.Lock()
+	defer s.createdMu.Unlock()
+	return s.createdBuild[sid]
+}
+
+func (s *Server) getCreatedCwd(sid string) string {
+	s.createdMu.Lock()
+	defer s.createdMu.Unlock()
+	if cwd := s.createdCwd[sid]; cwd != "" {
+		return cwd
+	}
+	if raw, ok := buildsessions.StripPrefix(sid); ok {
+		return s.createdCwd[raw]
+	}
+	return ""
 }
 
 func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
@@ -434,8 +625,8 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, isBuild := buildsessions.StripPrefix(sid); isBuild {
-			sess, err := buildsessions.Get(sid)
-			if err != nil || sess == nil {
+			sess := s.getBuildSession(sid)
+			if sess == nil {
 				writeJSON(w, 404, map[string]any{"error": "not found"})
 				return
 			}
@@ -459,6 +650,14 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	}
 	if parts[1] == "cancel" && r.Method == http.MethodPost {
 		s.handleCancelSession(w, r, sid)
+		return
+	}
+	if parts[1] == "models" && r.Method == http.MethodGet {
+		s.handleSessionModels(w, r, sid)
+		return
+	}
+	if parts[1] == "model" && (r.Method == http.MethodPut || r.Method == http.MethodPost) {
+		s.handleSetSessionModel(w, r, sid)
 		return
 	}
 	http.NotFound(w, r)
@@ -497,9 +696,135 @@ func (s *Server) cancelTurn(sessionID string) bool {
 	return false
 }
 
+func (s *Server) resolveRawACPSessionID(sid string) (string, bool) {
+	if raw, ok := buildsessions.StripPrefix(sid); ok {
+		return raw, true
+	}
+	s.buildRawMu.Lock()
+	raw := s.buildRaw[sid]
+	s.buildRawMu.Unlock()
+	if raw != "" {
+		return raw, true
+	}
+	return "", false
+}
+
+func (s *Server) ensureBuildLoaded(ctx context.Context, sid string) (string, error) {
+	raw, ok := s.resolveRawACPSessionID(sid)
+	if !ok {
+		return "", fmt.Errorf("not a Grok Build session")
+	}
+	if s.ACP == nil {
+		return "", fmt.Errorf("ACP manager not configured")
+	}
+	client := s.ACP.Client()
+	if len(client.ConfigOptions(raw)) > 0 {
+		return raw, nil
+	}
+	cwd := s.getCreatedCwd(sid)
+	if cwd == "" {
+		if _, c, err := buildsessions.ResolveMeta(sid); err == nil {
+			cwd = c
+		}
+	}
+	if cwd == "" {
+		return raw, nil // return stored/empty; caller reports unavailable
+	}
+	if err := client.LoadSession(ctx, raw, cwd); err != nil {
+		return raw, err
+	}
+	return raw, nil
+}
+
+func (s *Server) handleSessionModels(w http.ResponseWriter, r *http.Request, sid string) {
+	if _, isBuild := buildsessions.StripPrefix(sid); !isBuild {
+		writeJSON(w, 200, grokacp.ModelConfig{Available: false, Reason: "demo/bridge sessions have no ACP models"})
+		return
+	}
+	if s.getBuildSession(sid) == nil {
+		writeJSON(w, 404, map[string]any{"error": "not found"})
+		return
+	}
+	if s.ACP == nil {
+		writeJSON(w, 503, map[string]any{"error": "ACP unavailable", "available": false})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	raw, err := s.ensureBuildLoaded(ctx, sid)
+	if err != nil && raw == "" {
+		writeJSON(w, 503, map[string]any{"error": err.Error(), "available": false})
+		return
+	}
+	mc := s.ACP.Client().ModelConfig(raw)
+	if err != nil && !mc.Available {
+		mc.Reason = err.Error()
+	}
+	writeJSON(w, 200, mc)
+}
+
+func (s *Server) handleSetSessionModel(w http.ResponseWriter, r *http.Request, sid string) {
+	if _, isBuild := buildsessions.StripPrefix(sid); !isBuild {
+		writeJSON(w, 400, map[string]any{"error": "model selection requires a Grok Build session"})
+		return
+	}
+	if s.getBuildSession(sid) == nil {
+		writeJSON(w, 404, map[string]any{"error": "not found"})
+		return
+	}
+	if s.ACP == nil {
+		writeJSON(w, 503, map[string]any{"error": "ACP unavailable"})
+		return
+	}
+	body := readJSON(r)
+	value, _ := body["value"].(string)
+	if value == "" {
+		value, _ = body["model"].(string)
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		writeJSON(w, 400, map[string]any{"error": "value required"})
+		return
+	}
+	configID, _ := body["configId"].(string)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	raw, err := s.ensureBuildLoaded(ctx, sid)
+	if err != nil && raw == "" {
+		status := 500
+		if isAgentUnavailable(err) {
+			status = 503
+		}
+		writeJSON(w, status, map[string]any{"error": err.Error()})
+		return
+	}
+	client := s.ACP.Client()
+	if strings.TrimSpace(configID) == "" {
+		mc := client.ModelConfig(raw)
+		configID = mc.ConfigID
+	}
+	if configID == "" {
+		configID = "model"
+	}
+	opts, err := client.SetConfigOption(ctx, raw, configID, "id", value)
+	if err != nil {
+		status := 500
+		if isAgentUnavailable(err) {
+			status = 503
+		}
+		writeJSON(w, status, map[string]any{"error": err.Error()})
+		return
+	}
+	mc := grokacp.ModelConfigFromOptions(opts)
+	s.Hub.Broadcast(map[string]any{
+		"type": "session_models", "session_id": sid, "models": mc,
+	}, sid, nil)
+	writeJSON(w, 200, mc)
+}
+
 func (s *Server) handleCancelSession(w http.ResponseWriter, r *http.Request, sid string) {
 	if _, isBuild := buildsessions.StripPrefix(sid); isBuild {
-		if sess, err := buildsessions.Get(sid); err != nil || sess == nil {
+		if s.getBuildSession(sid) == nil {
 			writeJSON(w, 404, map[string]any{"error": "not found"})
 			return
 		}
@@ -546,7 +871,7 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request, sid s
 
 	run := s.runChat
 	if _, isBuild := buildsessions.StripPrefix(sid); isBuild {
-		if sess, err := buildsessions.Get(sid); err != nil || sess == nil {
+		if s.getBuildSession(sid) == nil {
 			writeJSON(w, 404, map[string]any{"error": "not found"})
 			return
 		}
@@ -663,6 +988,9 @@ func (s *Server) runChat(parent context.Context, sessionID, content string, onUs
 			if c, ok := event["content"].(string); ok && c != "" {
 				fullText = c
 			}
+			if errStr, ok := event["error"].(string); ok && errStr != "" && errStr != "cancelled" && s.Usage != nil {
+				s.Usage.NoteLimitError(fmt.Errorf("%s", errStr))
+			}
 			if event["cancelled"] == true {
 				cancelled = true
 			}
@@ -751,7 +1079,17 @@ func (s *Server) runBuildChat(parent context.Context, sessionID, content string,
 
 	rawID, cwd, err := buildsessions.ResolveMeta(sessionID)
 	if err != nil {
-		return "", err
+		raw, ok := buildsessions.StripPrefix(sessionID)
+		cwd = s.getCreatedCwd(sessionID)
+		if ok && cwd == "" && s.ACP != nil {
+			if loaded, lok := s.ACP.Client().LoadedCwd(raw); lok {
+				cwd = loaded
+			}
+		}
+		if !ok || cwd == "" {
+			return "", err
+		}
+		rawID = raw
 	}
 	s.setBuildRaw(sessionID, rawID)
 
@@ -777,6 +1115,9 @@ func (s *Server) runBuildChat(parent context.Context, sessionID, content string,
 
 	ch, err := client.Prompt(ctx, sessionID, rawID, content)
 	if err != nil {
+		if s.Usage != nil {
+			s.Usage.NoteLimitError(err)
+		}
 		s.Hub.Broadcast(map[string]any{
 			"type": "assistant_done", "session_id": sessionID,
 			"content": "", "error": err.Error(), "hint": agentHint(err),
@@ -797,6 +1138,9 @@ func (s *Server) runBuildChat(parent context.Context, sessionID, content string,
 			gotDone = true
 			if c, ok := event["content"].(string); ok && c != "" {
 				fullText = c
+			}
+			if errStr, ok := event["error"].(string); ok && errStr != "" && errStr != "cancelled" && s.Usage != nil {
+				s.Usage.NoteLimitError(fmt.Errorf("%s", errStr))
 			}
 		}
 		s.Hub.Broadcast(event, sessionID, nil)
@@ -867,7 +1211,7 @@ func (s *Server) handleWSMessage(conn *websocket.Conn, data map[string]any) {
 		}
 		var sess *sessions.Session
 		if _, isBuild := buildsessions.StripPrefix(sid); isBuild {
-			sess, _ = buildsessions.Get(sid)
+			sess = s.getBuildSession(sid)
 		} else {
 			sess, _ = s.Hub.Store.Get(sid)
 			if sess != nil && sess.Source == "" {
@@ -895,7 +1239,7 @@ func (s *Server) handleWSMessage(conn *websocket.Conn, data map[string]any) {
 		}
 		var isBuild bool
 		if _, isBuild = buildsessions.StripPrefix(sid); isBuild {
-			if sess, err := buildsessions.Get(sid); err != nil || sess == nil {
+			if s.getBuildSession(sid) == nil {
 				_ = conn.WriteJSON(map[string]any{"type": "error", "error": "session not found"})
 				return
 			}

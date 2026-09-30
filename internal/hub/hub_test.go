@@ -216,7 +216,7 @@ func TestRestart(t *testing.T) {
 
 func TestHTTPMessageFallback(t *testing.T) {
 	ts, _, _ := testServer(t)
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"t"}`))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"t","demo":true}`))
 	req.Header = authHeader()
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
@@ -261,7 +261,7 @@ func TestHTTPMessageFallback(t *testing.T) {
 
 func TestWSChat(t *testing.T) {
 	ts, _, _ := testServer(t)
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"ws"}`))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"ws","demo":true}`))
 	req.Header = authHeader()
 	req.Header.Set("Content-Type", "application/json")
 	res, _ := http.DefaultClient.Do(req)
@@ -326,7 +326,7 @@ func TestAgentMockBridge(t *testing.T) {
 		o.JobRegistry = reg
 	})
 
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"v"}`))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"v","demo":true}`))
 	req.Header = authHeader()
 	req.Header.Set("Content-Type", "application/json")
 	res, _ := http.DefaultClient.Do(req)
@@ -429,7 +429,7 @@ func TestToolEventsRoundTripWithID(t *testing.T) {
 		o.JobRegistry = reg
 	})
 
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"tools"}`))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"tools","demo":true}`))
 	req.Header = authHeader()
 	req.Header.Set("Content-Type", "application/json")
 	res, _ := http.DefaultClient.Do(req)
@@ -493,7 +493,7 @@ func TestToolCardAliasPersists(t *testing.T) {
 		o.Agent = ag
 	})
 
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"alias"}`))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"alias","demo":true}`))
 	req.Header = authHeader()
 	req.Header.Set("Content-Type", "application/json")
 	res, _ := http.DefaultClient.Do(req)
@@ -576,7 +576,7 @@ func TestSessionCancelUnblocksMock(t *testing.T) {
 		o.JobRegistry = reg
 	})
 
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"cancel"}`))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"cancel","demo":true}`))
 	req.Header = authHeader()
 	req.Header.Set("Content-Type", "application/json")
 	res, _ := http.DefaultClient.Do(req)
@@ -693,7 +693,7 @@ func TestDemoAgentCancelViaAPI(t *testing.T) {
 	ts, _, _ := testServer(t, func(o *hub.Options) {
 		o.Agent = slow
 	})
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"demo-cancel"}`))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"demo-cancel","demo":true}`))
 	req.Header = authHeader()
 	req.Header.Set("Content-Type", "application/json")
 	res, _ := http.DefaultClient.Do(req)
@@ -842,7 +842,7 @@ func TestNoGrokHomeBridgeOnly(t *testing.T) {
 	t.Setenv("GROK_HOME", missing)
 	ts, _, _ := testServer(t, func(o *hub.Options) { o.SeedDemo = false })
 	// Create one bridge session
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"only"}`))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"only","demo":true}`))
 	req.Header = authHeader()
 	res, _ := http.DefaultClient.Do(req)
 	res.Body.Close()
@@ -898,6 +898,12 @@ func (f *fakeBuildACP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch method {
 		case "initialize":
 			_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{"protocolVersion": 1}})
+		case "session/new":
+			sid := "acp-created-1"
+			_ = conn.WriteJSON(map[string]any{
+				"jsonrpc": "2.0", "id": id,
+				"result": map[string]any{"sessionId": sid},
+			})
 		case "session/load":
 			_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": id, "result": nil})
 		case "session/prompt":
@@ -1013,5 +1019,154 @@ func TestBuildSessionLiveSendViaACP(t *testing.T) {
 	if res.StatusCode != 200 {
 		body, _ := io.ReadAll(res.Body)
 		t.Fatalf("POST messages: %d %s", res.StatusCode, body)
+	}
+}
+
+func startFakeACP(t *testing.T) (*grokacp.Manager, *httptest.Server) {
+	t.Helper()
+	fake := &fakeBuildACP{up: websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}}
+	acpSrv := httptest.NewServer(fake)
+	t.Cleanup(acpSrv.Close)
+	wsURL := "ws" + strings.TrimPrefix(acpSrv.URL, "http") + "/ws"
+	return grokacp.NewManager(grokacp.Config{WSURL: wsURL, Secret: "t", AutoStart: false}), acpSrv
+}
+
+func TestNewSessionCreatesBuildViaACP(t *testing.T) {
+	cwd := t.TempDir()
+	t.Setenv("GROK_BRIDGE_GROK_HOME", t.TempDir())
+	t.Setenv("GROK_HOME", "")
+	mgr, _ := startFakeACP(t)
+	ts, _, dataDir := testServer(t, func(o *hub.Options) {
+		o.SeedDemo = false
+		o.ACP = mgr
+	})
+
+	payload, _ := json.Marshal(map[string]any{"title": "From phone", "cwd": cwd})
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", bytes.NewReader(payload))
+	req.Header = authHeader()
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var sess map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&sess)
+	if res.StatusCode != 201 {
+		t.Fatalf("status=%d body=%v", res.StatusCode, sess)
+	}
+	id, _ := sess["id"].(string)
+	if !strings.HasPrefix(id, "build:") {
+		t.Fatalf("want build: id, got %q", id)
+	}
+	if sess["source"] != "build" {
+		t.Fatalf("source=%v", sess["source"])
+	}
+
+	// Must not have written a hub-native session.
+	entries, _ := os.ReadDir(filepath.Join(dataDir, "sessions"))
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json") {
+			t.Fatalf("unexpected hub-native session file %s", e.Name())
+		}
+	}
+
+	reqG, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/sessions/"+id, nil)
+	reqG.Header = authHeader()
+	resG, err := http.DefaultClient.Do(reqG)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resG.Body.Close()
+	if resG.StatusCode != 200 {
+		body, _ := io.ReadAll(resG.Body)
+		t.Fatalf("GET created session: %d %s", resG.StatusCode, body)
+	}
+
+	reqM, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions/"+id+"/messages",
+		strings.NewReader(`{"content":"hello build"}`))
+	reqM.Header = authHeader()
+	reqM.Header.Set("Content-Type", "application/json")
+	resM, err := http.DefaultClient.Do(reqM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resM.Body.Close()
+	if resM.StatusCode != 200 {
+		body, _ := io.ReadAll(resM.Body)
+		t.Fatalf("POST messages on new build session: %d %s", resM.StatusCode, body)
+	}
+}
+
+func TestNewSessionACPUnreachableNoBridgeFallback(t *testing.T) {
+	t.Setenv("GROK_BRIDGE_GROK_HOME", t.TempDir())
+	mgr := grokacp.NewManager(grokacp.Config{WSURL: "ws://127.0.0.1:1/ws", Secret: "x", AutoStart: false})
+	ts, _, dataDir := testServer(t, func(o *hub.Options) {
+		o.SeedDemo = false
+		o.ACP = mgr
+	})
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"should fail"}`))
+	req.Header = authHeader()
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var body map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&body)
+	if res.StatusCode != 503 && res.StatusCode != 500 {
+		t.Fatalf("want 503/500, got %d %v", res.StatusCode, body)
+	}
+	errStr, _ := body["error"].(string)
+	if errStr == "" {
+		t.Fatalf("missing error: %v", body)
+	}
+	if body["id"] != nil {
+		t.Fatalf("must not return a session: %v", body)
+	}
+
+	entries, _ := os.ReadDir(filepath.Join(dataDir, "sessions"))
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json") {
+			t.Fatalf("silently created hub-native session %s", e.Name())
+		}
+	}
+
+	reqL, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/sessions", nil)
+	reqL.Header = authHeader()
+	resL, _ := http.DefaultClient.Do(reqL)
+	defer resL.Body.Close()
+	var list struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	_ = json.NewDecoder(resL.Body).Decode(&list)
+	if len(list.Sessions) != 0 {
+		t.Fatalf("list should stay empty, got %+v", list.Sessions)
+	}
+}
+
+func TestNewSessionDemoStillHubNative(t *testing.T) {
+	ts, _, _ := testServer(t, func(o *hub.Options) { o.SeedDemo = false })
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/sessions", strings.NewReader(`{"title":"Demo chat","demo":true}`))
+	req.Header = authHeader()
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var sess map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&sess)
+	if res.StatusCode != 201 {
+		t.Fatalf("status=%d body=%v", res.StatusCode, sess)
+	}
+	id, _ := sess["id"].(string)
+	if id == "" || strings.HasPrefix(id, "build:") {
+		t.Fatalf("want hub-native id, got %q", id)
+	}
+	if src, _ := sess["source"].(string); src != "bridge" && src != "" {
+		t.Fatalf("source=%v", sess["source"])
 	}
 }

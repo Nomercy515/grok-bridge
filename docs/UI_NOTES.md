@@ -64,7 +64,7 @@ Dark greyscale contrast kept high on primary text; focus rings on interactive co
 
 ## Grok Build sessions (live via ACP)
 
-The session rail merges hub-native chats (`source: "bridge"`) with on-disk Grok Build sessions (`source: "build"`, ids `build:<session-id>`).
+The session rail merges hub-native chats (`source: "bridge"`) with on-disk Grok Build sessions (`source: "build"`, ids `build:<session-id>`). **New session** (non-demo) creates a real Build chat via ACP `session/new` and opens `build:…`. If `grok agent serve` is unreachable, the UI shows the hub error (503) and does not create a bridge session. Demo mode (`/?demo=1`, POST `{demo:true}`) still creates hub-native chats for canned streams.
 
 - Point the hub at a Grok home via `GROK_BRIDGE_GROK_HOME` (preferred) or `GROK_HOME`, else `~/.grok`.
 - Expected layout: `$GROK_HOME/sessions/<url.PathEscape(cwd)>/<session-id>/summary.json` + `chat_history.jsonl` (flat `sessions/<id>/` also tolerated).
