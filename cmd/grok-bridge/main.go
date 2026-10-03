@@ -6,12 +6,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"grok-bridge/internal/auth"
 	"grok-bridge/internal/bridge"
+	"grok-bridge/internal/buildsessions"
 	"grok-bridge/internal/endpoint"
 	"grok-bridge/internal/hub"
 	"grok-bridge/internal/restart"
@@ -102,12 +104,19 @@ func main() {
 		log.Printf("TLS enabled (cert=%s)", cert)
 	}
 	log.Printf("Pairing code: %s  (POST /api/auth/pair with {\"code\": \"...\"})", authStore.PairingCode())
-	ep := endpoint.PublicView(store.Root)
+	srv.ListenAddr = addr
+	maybeRefreshEndpoint(store.Root)
+	hostname, _ := os.Hostname()
+	ep := endpoint.PublicViewWithRuntime(store.Root, endpoint.Runtime{
+		Hostname: hostname, ListenAddr: addr, Version: hub.Version,
+	})
 	if cfg, _ := ep["configured"].(bool); cfg {
 		log.Printf("Phone URL (Tailscale MagicDNS/100.x): %v", ep["url"])
 	} else {
 		log.Printf("Phone URL: not yet in data/endpoint.json — run scripts/refresh-endpoint.sh after Tailscale is up")
 	}
+	log.Printf("Hub identity: host=%v listen=%s version=%s", ep["hostname"], addr, hub.Version)
+	logBuildStatus()
 	log.Printf("Data dir: %s", store.Root)
 	log.Printf("Web dir: %s", webDir)
 	log.Printf("Restart: POST /api/control/restart (bearer) — prefer scripts/supervise.sh")
@@ -117,7 +126,6 @@ func main() {
 		log.Fatalf("serve: %v", err)
 	}
 }
-
 
 // loadProjectEnv applies KEY=VAL from data/grok-bridge.env when the key is unset.
 // Lets GROK_BRIDGE_USER_NAME / GROK_BRIDGE_GROK_HOME / GROK_BRIDGE_SSL_* take
@@ -172,4 +180,60 @@ func envInt(k string, def int) int {
 		return def
 	}
 	return n
+}
+
+func logBuildStatus() {
+	st := buildsessions.ProbeStatus()
+	switch st.Reason {
+	case "ok":
+		log.Printf("Grok Build: %d session(s) under %s", st.SessionCount, st.GrokHome)
+	case "empty":
+		log.Printf("Grok Build: home %s has sessions/ but no listable chats yet", st.GrokHome)
+	case "missing_sessions_dir":
+		log.Printf("WARNING: Grok home %s has no sessions/ — Build chats will be hidden on this hub (wrong Tailscale endpoint? see docs/MULTI_HUB.md)", st.GrokHome)
+	default:
+		log.Printf("WARNING: no Grok home resolved — Build chats unavailable on this hub (docs/MULTI_HUB.md)")
+	}
+}
+
+// maybeRefreshEndpoint best-effort updates data/endpoint.json so the phone URL
+// matches this process host. Never fails hub startup (Tailscale may be down).
+func maybeRefreshEndpoint(dataDir string) {
+	root := findRepoRoot()
+	if root == "" {
+		return
+	}
+	script := filepath.Join(root, "scripts", "refresh-endpoint.sh")
+	if st, err := os.Stat(script); err != nil || st.IsDir() {
+		return
+	}
+	cmd := exec.Command(script, "--no-wait", "--no-regen-certs")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "GROK_BRIDGE_DATA="+dataDir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("endpoint refresh skipped: %v (%s)", err, strings.TrimSpace(string(out)))
+		return
+	}
+	log.Printf("endpoint.json refreshed for this hub")
+}
+
+func findRepoRoot() string {
+	var candidates []string
+	if v := os.Getenv("GROK_BRIDGE_ROOT"); v != "" {
+		candidates = append(candidates, v)
+	}
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, wd)
+	}
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Dir(exe), filepath.Join(filepath.Dir(exe), ".."))
+	}
+	for _, c := range candidates {
+		p := filepath.Clean(c)
+		if _, err := os.Stat(filepath.Join(p, "scripts", "refresh-endpoint.sh")); err == nil {
+			return p
+		}
+	}
+	return ""
 }

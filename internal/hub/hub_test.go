@@ -388,7 +388,11 @@ func TestBridgeRoutesAuth(t *testing.T) {
 }
 
 func TestEndpointAPI(t *testing.T) {
-	ts, _, dir := testServer(t)
+	ts, srv, dir := testServer(t)
+	srv.ListenAddr = "100.1.1.1:4020"
+	missing := filepath.Join(t.TempDir(), "no-grok-home")
+	t.Setenv("GROK_BRIDGE_GROK_HOME", missing)
+	t.Setenv("GROK_HOME", "")
 	_ = os.WriteFile(filepath.Join(dir, "endpoint.json"), []byte(`{"source":"tailscale","url":"https://x.ts.net:4020/","magicdns":"x.ts.net","tailscale_ipv4":"100.1.1.1","port":4020}`), 0644)
 	res, _ := http.Get(ts.URL + "/api/endpoint")
 	defer res.Body.Close()
@@ -396,6 +400,23 @@ func TestEndpointAPI(t *testing.T) {
 	_ = json.NewDecoder(res.Body).Decode(&body)
 	if body["configured"] != true {
 		t.Fatalf("%v", body)
+	}
+	if body["listen_addr"] != "100.1.1.1:4020" {
+		t.Fatalf("listen_addr: %v", body["listen_addr"])
+	}
+	if body["hostname"] == nil || body["hostname"] == "" {
+		t.Fatalf("hostname missing: %v", body)
+	}
+	bi, _ := body["build_identity"].(map[string]any)
+	if bi == nil || bi["version"] == nil {
+		t.Fatalf("build_identity: %v", body)
+	}
+	build, _ := body["build"].(map[string]any)
+	if build == nil || build["reason"] == nil {
+		t.Fatalf("build probe: %v", body)
+	}
+	if body["build_sessions"] != "unavailable" {
+		t.Fatalf("want unavailable build_sessions, got %v", body["build_sessions"])
 	}
 }
 

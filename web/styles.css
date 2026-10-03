@@ -532,6 +532,32 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .endpoint-banner a { color: var(--text); }
 .endpoint-banner .muted { margin-top: 6px; color: var(--muted-2); }
 
+.endpoint-banner .endpoint-id {
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  word-break: break-word;
+}
+.build-empty-hint {
+  margin: 8px 6px 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.build-empty-hint .build-empty-title {
+  color: var(--text-dim);
+  font-weight: 600;
+  margin-bottom: 4px;
+  font-size: 0.76rem;
+}
+.build-empty-hint .build-empty-body {
+  color: var(--muted-2);
+}
+
+
 /* —— Stage —— */
 .stage {
   display: flex;
