@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -123,6 +124,7 @@ type Server struct {
 	Mux          *http.ServeMux
 	ACP          *grokacp.Manager
 	Usage        *grokusage.Cache
+	ListenAddr   string // set by main before ListenAndServe for /api/endpoint identity
 	turnsMu      sync.Mutex
 	turns        map[string]context.CancelFunc // sessionID -> cancel active turn
 	buildRawMu   sync.Mutex
@@ -299,6 +301,17 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) endpointView() map[string]any {
+	host, _ := os.Hostname()
+	return endpoint.PublicViewWithRuntime(s.Hub.Store.Root, endpoint.Runtime{
+		Hostname:   host,
+		ListenAddr: s.ListenAddr,
+		Version:    Version,
+		GOOS:       runtime.GOOS,
+		GOARCH:     runtime.GOARCH,
+	})
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -326,11 +339,11 @@ func (s *Server) routes() {
 		writeJSON(w, 200, map[string]any{"ok": true})
 	})
 	s.Mux.HandleFunc("/api/endpoint", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, endpoint.PublicView(s.Hub.Store.Root))
+		writeJSON(w, 200, s.endpointView())
 	})
 	s.Mux.HandleFunc("/api/auth/status", func(w http.ResponseWriter, r *http.Request) {
 		body := s.Hub.Auth.Status()
-		body["endpoint"] = endpoint.PublicView(s.Hub.Store.Root)
+		body["endpoint"] = s.endpointView()
 		if name := HostUserLabel(); name != "" {
 			body["user_name"] = name
 		}
@@ -392,7 +405,6 @@ func (s *Server) handleRotatePairing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "pairing_code": code})
 }
 
-
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", 405)
@@ -408,7 +420,10 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		body := map[string]any{"sessions": s.listMergedSessions(r)}
+		body := map[string]any{
+			"sessions": s.listMergedSessions(r),
+			"build":    buildsessions.ProbeStatus(),
+		}
 		if s.Usage != nil {
 			body["usage"] = s.Usage.Snapshot(r.Context())
 		}

@@ -63,6 +63,48 @@ resolve_ssl() {
 }
 resolve_ssl
 
+# Prefer one phone-facing hub. Warn (do not fail) if another Tailscale peer
+# already answers Bridge health on this port — wrong bookmark hides Build chats.
+warn_other_hubs() {
+  local self_ip="" peer_ip name
+  if command -v tailscale >/dev/null 2>&1; then
+    self_ip="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
+  fi
+  if [[ -z "$self_ip" && -f "$DATA/grok-bridge.endpoint.env" ]]; then
+    self_ip="$(awk -F= '/^GROK_BRIDGE_TAILSCALE_IP=/{print $2; exit}' "$DATA/grok-bridge.endpoint.env")"
+  fi
+  if ! command -v tailscale >/dev/null 2>&1; then
+    return 0
+  fi
+  local status_json
+  status_json="$(tailscale status --json 2>/dev/null || true)"
+  [[ -n "$status_json" ]] || return 0
+  while IFS=$'\t' read -r peer_ip name; do
+    [[ -n "$peer_ip" ]] || continue
+    [[ "$peer_ip" == "$self_ip" ]] && continue
+    [[ "$peer_ip" == 100.* ]] || continue
+    if curl -fsS --max-time 1 -k "https://${peer_ip}:${PORT}/health" >/dev/null 2>&1 \
+      || curl -fsS --max-time 1 "http://${peer_ip}:${PORT}/health" >/dev/null 2>&1; then
+      echo "WARNING: another Bridge hub answered on ${peer_ip}:${PORT} (${name:-peer})." >&2
+      echo "  Build chats are local to each host's Grok home — bookmark ONE phone-facing hub." >&2
+      echo "  See docs/MULTI_HUB.md and GET /api/endpoint (hostname, grok_home, build count)." >&2
+    fi
+  done < <(printf '%s' "$status_json" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+peers=d.get("Peer") or {}
+for p in peers.values():
+    ips=p.get("TailscaleIPs") or []
+    v4=[i for i in ips if ":" not in i]
+    if not v4:
+        continue
+    name=(p.get("HostName") or p.get("DNSName") or "").rstrip(".")
+    print(f"{v4[0]}\t{name}")
+' 2>/dev/null || true)
+}
+
+warn_other_hubs
+
 if [[ ! -x "$ROOT/bin/grok-bridge" ]]; then
   echo "Building grok-bridge…"
   (cd "$ROOT" && go build -o bin/grok-bridge ./cmd/grok-bridge)
@@ -90,6 +132,9 @@ start_hub() {
   resolve_ssl
   HOST="$(resolve_host)"
   export GROK_BRIDGE_HOST="$HOST"
+  if [[ -x "$ROOT/scripts/refresh-endpoint.sh" ]]; then
+    "$ROOT/scripts/refresh-endpoint.sh" --no-wait --no-regen-certs >/dev/null 2>&1 || true
+  fi
   "$ROOT/bin/grok-bridge" --host "$HOST" --port "$PORT" --data-dir "$DATA" \
     "${SSL_ARGS[@]+"${SSL_ARGS[@]}"}" &
   PID=$!
