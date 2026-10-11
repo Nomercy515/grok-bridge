@@ -1,11 +1,11 @@
 # Apply model selector on WSL (feat/new-session-build-acp)
 
 ## Blocker that forced this package
-Remote Dev executor Shell with `machineId=<machine-id>` did **not** route to <your-host>; commands ran on the agent box. SSH to `<tailscale-ip>` refused. Only hub `:4020` is reachable. This tree is an apply-ready implementation + unit tests; it was **not** committed on WSL.
+Remote executor Shell did **not** route to the WSL host; commands ran on the agent box. SSH to `<wsl-tailscale-ip>` refused. Only hub `:4020` is reachable. This tree is an apply-ready implementation + unit tests; it was **not** committed on WSL.
 
 ## On WSL
 ```bash
-cd <path-to-your-clone>/grok-bridge
+cd "<path-to-your-clone>/grok-bridge"
 git checkout feat/new-session-build-acp
 # Copy files from this package (or re-dispatch executor with working machine Shell):
 #   internal/grokacp/config_options.go
@@ -27,7 +27,7 @@ touch data/restart.requested   # or systemctl restart as you usually do
 
 # Verify (with bearer token):
 curl -sk -H "Authorization: Bearer $TOKEN" \
-  "https://<tailscale-ip>:4020/api/sessions/$BUILD_SID/models"
+  "https://<your-tailnet-host>:4020/api/sessions/$BUILD_SID/models"
 # Expect non-empty models[] from ACP — not hardcoded grok-4/claude/gpt mock list.
 # Journal: grokacp: session/new configOptions for … should show category=model
 ```

@@ -141,6 +141,21 @@ sudo systemctl restart grok-bridge-endpoint grok-bridge
 
 Flags: `SKIP_SYSTEMD=1`, `SKIP_TAILSCALE=1`.
 
+### Recommended: systemd user service (no root)
+
+The hub must run as the account that owns `~/.grok` (login + sessions), so the
+auto-started Grok agent sees the same sessions the hub lists.
+
+```bash
+scripts/install-service.sh     # as your normal user; asks sudo once for loginctl enable-linger
+journalctl --user -u grok-bridge -f
+scripts/uninstall-service.sh   # stop + remove (unit backed up)
+```
+
+Template: `deploy/grok-bridge.user.service` (uses `%h`, no hardcoded user or
+paths). Self-check, remote reset, rollback and migrating from the old root
+system unit: [`docs/ops.md`](docs/ops.md).
+
 ## Why Tailscale (only)
 
 VM LAN addresses often change on every DHCP lease. **MagicDNS** and Tailscale `100.x` stay stable.
@@ -214,6 +229,7 @@ Never commit real secrets, webhook URLs, or sender keys. See `docs/AGENT_BRIDGE.
 | POST | `/api/sessions/{id}/messages` | bearer | HTTP chat fallback |
 | POST | `/api/sessions/{id}/cancel` | bearer | Stop mid-turn |
 | POST | `/api/control/restart` | bearer | supervised restart |
+| POST | `/api/admin/reset` | bearer | stop + relaunch the auto-started `grok agent serve`, reconnect ACP, re-run self-check → `{ok, checks, agentPid, health}` (see `docs/ops.md`) |
 | WS | `/ws` | bearer | live events |
 | POST | `/bridge/v1/jobs` | bridge secret | create job |
 | GET | `/bridge/v1/jobs/{id}` | bridge secret | job + context (`cancelled` possible) |

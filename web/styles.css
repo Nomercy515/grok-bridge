@@ -508,6 +508,7 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 }
 .btn.restart-hub:hover:not(:disabled) { opacity: 0.8; }
 .btn.restart-hub:disabled { opacity: 0.4; cursor: wait; }
+.btn.restart-hub.reset-bridge { margin-top: 8px; }
 
 .endpoint-banner {
   margin: 4px 4px 0;

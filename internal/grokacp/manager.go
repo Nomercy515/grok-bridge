@@ -3,6 +3,7 @@ package grokacp
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // Manager owns a shared ACP client for the hub (lazy connect).
@@ -57,4 +58,51 @@ func (m *Manager) Close() error {
 		return c.Close()
 	}
 	return nil
+}
+
+// Config returns the manager's agent config.
+func (m *Manager) Config() Config {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg
+}
+
+// ResetResult describes one agent reset.
+type ResetResult struct {
+	StoppedPID int    `json:"stoppedPid,omitempty"`
+	AgentPID   int    `json:"agentPid"`
+	Connected  bool   `json:"connected"`
+	Error      string `json:"error,omitempty"`
+}
+
+// Reset drops the shared ACP connection, stops the agent this hub auto-started
+// (plus a stray `grok agent serve` on the bind port owned by this same user),
+// relaunches it when auto-start is enabled, and reconnects.
+func (m *Manager) Reset(ctx context.Context) ResetResult {
+	cfg := m.Config()
+	_ = m.Close()
+	res := ResetResult{StoppedPID: StopAutoStarted(5 * time.Second)}
+	if pid := ListenerPID(cfg.Bind); pid > 0 && pid != res.StoppedPID && IsOwnGrokAgent(pid) {
+		if killPID(pid) == nil {
+			res.StoppedPID = pid
+		}
+	}
+	waitPortFree(cfg.Bind, 5*time.Second)
+	if cfg.AutoStart {
+		if err := AutoStart(ctx, cfg); err != nil {
+			res.Error = err.Error()
+		}
+	}
+	if err := m.EnsureConnected(ctx); err != nil {
+		if res.Error == "" {
+			res.Error = err.Error()
+		}
+	} else {
+		res.Connected = true
+	}
+	res.AgentPID = AgentPID()
+	if res.AgentPID == 0 {
+		res.AgentPID = ListenerPID(cfg.Bind)
+	}
+	return res
 }

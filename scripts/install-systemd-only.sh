@@ -42,7 +42,7 @@ resolve_service_user() {
     id -un
     return
   fi
-  echo "error: set GROK_BRIDGE_SERVICE_USER to the human account (e.g. <user>)" >&2
+  echo "error: set GROK_BRIDGE_SERVICE_USER to the human account (your login name)" >&2
   exit 1
 }
 
@@ -50,7 +50,7 @@ SERVICE_USER="$(resolve_service_user)"
 SERVICE_GROUP="$(id -gn "$SERVICE_USER" 2>/dev/null || printf '%s\n' "$SERVICE_USER")"
 SERVICE_HOME="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
 if [[ -z "$SERVICE_HOME" ]]; then
-  SERVICE_HOME="/home/$SERVICE_USER"
+  SERVICE_HOME="$(eval printf '%s' "~$SERVICE_USER")"
 fi
 GROK_HOME_DIR="${GROK_BRIDGE_GROK_HOME:-$SERVICE_HOME/.grok}"
 
@@ -72,10 +72,6 @@ if ! grep -q "^GROK_BRIDGE_USER_NAME=" "$ENV_FILE_PROJECT" 2>/dev/null; then
   display=""
   gecos="$(getent passwd "$SERVICE_USER" | cut -d: -f5 | cut -d, -f1 | xargs 2>/dev/null || true)"
   display="${gecos:-$SERVICE_USER}"
-  # Nice default for this host when GECOS empty.
-  if [[ "$SERVICE_USER" == "<user>" && -z "$gecos" ]]; then
-    display="<name>"
-  fi
   ensure_env_kv "$ENV_FILE_PROJECT" "GROK_BRIDGE_USER_NAME" "$display"
 fi
 chmod 600 "$ENV_FILE_PROJECT" 2>/dev/null || true

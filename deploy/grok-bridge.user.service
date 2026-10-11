@@ -1,0 +1,39 @@
+# Grok Bridge — systemd USER unit (no root, no hardcoded user or paths).
+#
+# Install with scripts/install-service.sh, which renders @REPO@ to the clone's
+# absolute path and writes ~/.config/systemd/user/grok-bridge.service.
+# %h = the invoking user's home. Running as that user means the auto-started
+# `grok agent serve` uses the same ~/.grok (login + sessions) the hub lists;
+# running as root made session/load fail with FS_NOT_FOUND (see docs/ops.md).
+#
+# Phone URL of record = Tailscale MagicDNS (or 100.x). Never port-forward :4020.
+
+[Unit]
+Description=Grok Bridge hub (supervised, user service)
+Documentation=file://@REPO@/docs/ops.md
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@
+Environment=GROK_HOME=%h/.grok
+Environment=GROK_BRIDGE_GROK_HOME=%h/.grok
+Environment=PATH=%h/.grok/bin:%h/.local/bin:%h/.local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=GROK_BRIDGE_DATA=@REPO@/data
+# Optional per-clone overrides (gitignored). Values here win over the lines above.
+EnvironmentFile=-@REPO@/data/grok-bridge.env
+EnvironmentFile=-@REPO@/data/grok-bridge.endpoint.env
+# Replaces the old root grok-bridge-endpoint.service: wait for Tailscale and
+# write data/endpoint.json as this user. Certs are NOT regenerated on every
+# start (that broke phone trust after each reboot); run
+# scripts/refresh-endpoint.sh --regen-certs by hand when SANs change.
+# Leading "-" = non-fatal.
+ExecStartPre=-@REPO@/scripts/refresh-endpoint.sh --wait-secs 90 --no-regen-certs
+ExecStartPre=@REPO@/scripts/selfcheck.sh
+ExecStart=@REPO@/scripts/supervise.sh
+Restart=always
+RestartSec=3
+TimeoutStartSec=150
+
+[Install]
+WantedBy=default.target

@@ -10,7 +10,7 @@ _(none — multi-hub identity slice shipped; see Done)_
 
 - **Status:** fixed (thin slice) — see PR that closes issue #1
 - **Doc:** [MULTI_HUB.md](./MULTI_HUB.md)
-- **GitHub:** https://github.com/<owner>/grok-bridge/issues/1
+- **GitHub:** issue #1 in this repository
 
 Shipped: `/api/endpoint` + UI hub identity (host, listen, version, Grok home, Build count/unavailable), empty Build rail copy, supervise peer warning + endpoint refresh on listen. Non-goal unchanged: no remote `~/.grok` sync.
 

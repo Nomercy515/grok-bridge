@@ -74,7 +74,6 @@ func findWeb(t *testing.T) string {
 	// walk up from module
 	for _, c := range []string{
 		filepath.Join(wd, "..", "..", "web"),
-		"/workspace/grok-bridge/web",
 	} {
 		if _, err := os.Stat(filepath.Join(c, "index.html")); err == nil {
 			return c

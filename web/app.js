@@ -49,6 +49,8 @@
     settingsModal: $("settingsModal"),
     demoToggle: $("demoToggle"),
     btnRestart: $("btnRestart"),
+    btnResetBridge: $("btnResetBridge"),
+    resetHint: $("resetHint"),
     grokOnlyToggle: $("grokOnlyToggle"),
     pushToggle: $("pushToggle"),
     pushHint: $("pushHint"),
@@ -2095,6 +2097,34 @@
 
   if (els.btnRestart) {
     els.btnRestart.onclick = () => restartHub();
+  }
+
+  /** POST /api/admin/reset: stop + relaunch the Grok agent, then show self-checks. */
+  async function resetBridge() {
+    if (!token || !els.btnResetBridge) return;
+    if (!window.confirm("Reset the bridge? This stops and relaunches the Grok agent; a reply in progress will be cut off.")) return;
+    const btn = els.btnResetBridge;
+    const hint = els.resetHint;
+    btn.disabled = true;
+    if (hint) { hint.hidden = false; hint.textContent = "Resetting…"; }
+    try {
+      const res = await api("/api/admin/reset", { method: "POST", body: "{}" });
+      const data = await res.json().catch(() => ({}));
+      const failed = (data.checks || []).filter((c) => !c.ok);
+      let msg = data.ok ? "Bridge reset OK" : "Reset finished with problems";
+      if (data.agentPid) msg += " — agent pid " + data.agentPid;
+      if (failed.length) msg += "\n" + failed.map((c) => "✗ " + c.name + ": " + c.detail).join("\n");
+      if (data.error) msg += "\n" + data.error;
+      if (hint) { hint.textContent = msg; hint.style.whiteSpace = "pre-line"; }
+    } catch (err) {
+      if (hint) hint.textContent = "Reset failed: " + (err && err.message ? err.message : err);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  if (els.btnResetBridge) {
+    els.btnResetBridge.onclick = () => resetBridge();
   }
 
   /** Pin .app to the visible viewport on phone (URL bar / keyboard). Desktop keeps CSS svh/dvh. */

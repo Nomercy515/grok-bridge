@@ -30,6 +30,7 @@ import (
 	"grok-bridge/internal/grokacp"
 	"grok-bridge/internal/grokusage"
 	"grok-bridge/internal/restart"
+	"grok-bridge/internal/selfcheck"
 	"grok-bridge/internal/sessions"
 )
 
@@ -125,6 +126,9 @@ type Server struct {
 	ACP          *grokacp.Manager
 	Usage        *grokusage.Cache
 	ListenAddr   string // set by main before ListenAndServe for /api/endpoint identity
+	// ResetAgent and SelfCheck back POST /api/admin/reset (overridable in tests).
+	ResetAgent   func(ctx context.Context) grokacp.ResetResult
+	SelfCheck    func(ctx context.Context) []selfcheck.Check
 	turnsMu      sync.Mutex
 	turns        map[string]context.CancelFunc // sessionID -> cancel active turn
 	buildRawMu   sync.Mutex
@@ -202,6 +206,10 @@ func NewServer(opts Options) (*Server, error) {
 		buildRaw:     make(map[string]string),
 		createdBuild: make(map[string]*sessions.Session),
 		createdCwd:   make(map[string]string),
+	}
+	s.ResetAgent = func(ctx context.Context) grokacp.ResetResult { return s.ACP.Reset(ctx) }
+	s.SelfCheck = func(ctx context.Context) []selfcheck.Check {
+		return selfcheck.Run(ctx, selfcheck.Options{Bind: s.ACP.Config().Bind, AgentPID: grokacp.AgentPID()})
 	}
 	s.routes()
 	return s, nil
@@ -356,6 +364,7 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("/api/sessions", s.handleSessions)
 	s.Mux.HandleFunc("/api/sessions/", s.handleSessionByID)
 	s.Mux.HandleFunc("/api/control/restart", s.handleRestart)
+	s.Mux.HandleFunc("/api/admin/reset", s.handleAdminReset)
 	s.Mux.HandleFunc("/ws", s.handleWS)
 	s.Mux.HandleFunc("/bridge/v1/jobs", s.handleBridgeJobs)
 	s.Mux.HandleFunc("/bridge/v1/jobs/", s.handleBridgeJobByID)
@@ -937,6 +946,42 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, s.Restart.Request())
+}
+
+// handleAdminReset (bearer auth via authMiddleware) stops the auto-started grok
+// agent, relaunches it, reconnects ACP, and re-runs the self-check.
+func (s *Server) handleAdminReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+	log.Printf("admin reset requested from %s", r.RemoteAddr)
+	res := s.ResetAgent(ctx)
+	checks := s.SelfCheck(ctx)
+	for _, c := range checks {
+		state := "ok"
+		if !c.OK {
+			state = "FAIL"
+		}
+		log.Printf("selfcheck %s %s: %s", state, c.Name, c.Detail)
+	}
+	ok := res.Connected && !selfcheck.Failed(checks)
+	body := map[string]any{
+		"ok":       ok,
+		"checks":   checks,
+		"agentPid": res.AgentPID,
+		"health":   map[string]any{"hub": true, "agent": res.Connected},
+	}
+	if res.StoppedPID > 0 {
+		body["stoppedPid"] = res.StoppedPID
+	}
+	if res.Error != "" {
+		body["error"] = res.Error
+	}
+	log.Printf("admin reset done ok=%v agentPid=%d stopped=%d", ok, res.AgentPID, res.StoppedPID)
+	writeJSON(w, 200, body)
 }
 
 func (s *Server) runChat(parent context.Context, sessionID, content string, onUserSaved func(string)) (string, error) {
