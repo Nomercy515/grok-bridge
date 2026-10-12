@@ -115,6 +115,14 @@
       </button>
 
       <div class="composer-dock">
+        <section class="queue-tray" id="queueTray" hidden aria-labelledby="queueSummary">
+          <div class="queue-head">
+            <h2 class="queue-summary" id="queueSummary" aria-live="polite"></h2>
+            <span class="queue-paused muted" id="queuePausedNote" hidden>Paused after Stop</span>
+            <button type="button" class="btn queue-send-now" id="btnSendQueued" hidden>Send queued now</button>
+          </div>
+          <ol class="queue-list" id="queueList"></ol>
+        </section>
         <form class="composer" id="composer">
           <textarea
             id="input"
@@ -130,17 +138,20 @@
             </button>
             <div class="model-menu" id="modelMenuChip" hidden role="listbox" aria-label="Choose model"></div>
           </div>
+          <button type="button" class="btn stop" id="btnStop" hidden aria-label="Stop reply" title="Stop the current reply (queued messages stay)">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <rect x="3.5" y="3.5" width="7" height="7" rx="1.2" fill="currentColor"/>
+            </svg>
+            <span class="btn-label">Stop</span>
+          </button>
           <button type="submit" class="btn send" id="btnSend" disabled aria-label="Send message" title="Send">
             <span class="btn-label">Send</span>
             <svg class="icon-send" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
               <path d="M2 7h9M7 3l4 4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
-            <svg class="icon-stop" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" hidden>
-              <rect x="3.5" y="3.5" width="7" height="7" rx="1.2" fill="currentColor"/>
-            </svg>
           </button>
         </form>
-        <p class="composer-hint muted">Enter to send · Shift+Enter for newline · primary button becomes Stop mid-reply</p>
+        <p class="composer-hint muted">Enter to send · Shift+Enter for newline · messages sent mid-reply are queued</p>
       </div>
     </main>
   </div>

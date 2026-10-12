@@ -1,0 +1,7 @@
+{
+  "name": "grok-bridge-e2e",
+  "private": true,
+  "description": "Headless UI checks for Grok Bridge (Playwright)",
+  "scripts": { "live-status-queue": "node live-status-queue.js" },
+  "dependencies": { "playwright": "^1.48.0" }
+}

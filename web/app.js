@@ -27,6 +27,12 @@
     input: $("input"),
     composer: $("composer"),
     btnSend: $("btnSend"),
+    btnStop: $("btnStop"),
+    queueTray: $("queueTray"),
+    queueList: $("queueList"),
+    queueSummary: $("queueSummary"),
+    queuePausedNote: $("queuePausedNote"),
+    btnSendQueued: $("btnSendQueued"),
     btnNew: $("btnNew"),
     btnMenu: $("btnMenu"),
     ctxMeter: $("ctxMeter"),
@@ -83,6 +89,16 @@
   let catchingUp = false;
   let sending = false;
   let turnActive = false;
+  // Server-side turn status (GET /api/sessions/{id}/status, WS turn_status).
+  // The hub is the source of truth; local events are only hints.
+  let queueItems = [];
+  let queuePaused = false;
+  let editingQueueId = "";
+  let statusTimer = null;
+  let statusDelay = 0;
+  let statusSeq = 0;
+  const STATUS_POLL_MS = 3000;
+  const STATUS_POLL_MAX_MS = 30000;
   let liveTimer = null;
   let countsPrimed = false;
   const unreadIds = new Set();
@@ -268,36 +284,265 @@
     });
   }
 
+  // Send is always Send (it queues while a reply is running); Stop is a
+  // separate control shown only while the hub reports a running turn.
   function syncPrimaryButton() {
     const btn = els.btnSend;
     if (!btn) return;
     const label = btn.querySelector(".btn-label");
-    const iconSend = btn.querySelector(".icon-send");
-    const iconStop = btn.querySelector(".icon-stop");
-    if (turnActive) {
-      btn.type = "button";
-      btn.classList.add("is-stop");
-      if (label) label.textContent = "Stop";
-      btn.setAttribute("aria-label", "Stop reply");
-      btn.title = "Stop";
-      if (iconSend) iconSend.hidden = true;
-      if (iconStop) iconStop.hidden = false;
-      btn.disabled = false;
-    } else {
-      btn.type = "submit";
-      btn.classList.remove("is-stop");
-      if (label) label.textContent = "Send";
-      btn.setAttribute("aria-label", "Send message");
-      btn.title = "Send";
-      if (iconSend) iconSend.hidden = false;
-      if (iconStop) iconStop.hidden = true;
-      btn.disabled = !activeId || sending;
+    const willQueue = turnActive || queueItems.length > 0;
+    btn.type = "submit";
+    btn.classList.toggle("is-queue", willQueue);
+    if (label) label.textContent = willQueue ? "Queue" : "Send";
+    btn.setAttribute("aria-label", willQueue ? "Queue message (sends after the current reply)" : "Send message");
+    btn.title = willQueue ? "Queue — sends when Grok finishes" : "Send";
+    btn.disabled = !activeId || sending || !!(els.input && els.input.disabled);
+    if (els.btnStop) {
+      els.btnStop.hidden = !turnActive;
+      els.btnStop.disabled = !turnActive;
     }
+    if (els.composer) els.composer.classList.toggle("is-running", turnActive);
   }
 
   function setTurnActive(on) {
     turnActive = !!on;
     syncPrimaryButton();
+    scheduleStatusPoll();
+  }
+
+  /** Close any half-streamed bubble once the hub says the turn is over. */
+  function finalizeStreaming() {
+    if (streamingEl) {
+      streamingEl.classList.remove("streaming");
+      if (!streamingEl.dataset.id) {
+        streamingEl.dataset.id = "build-live-asst-" + Date.now().toString(36);
+      }
+    }
+    streamingEl = null;
+    streamingTools = null;
+  }
+
+  /**
+   * Apply authoritative turn status from the hub. Never leaves a stale Stop:
+   * if the hub says idle, Stop goes away and missed messages are fetched.
+   */
+  function applyStatus(st) {
+    if (!st || !activeId || st.session_id !== activeId) return;
+    const running = st.state === "running";
+    const wasRunning = turnActive;
+    queueItems = Array.isArray(st.queue) ? st.queue : [];
+    queuePaused = !!st.queue_paused;
+    setTurnActive(running);
+    renderQueue();
+    if (wasRunning && !running) {
+      // Reply finished while we were not listening (or the event was lost).
+      catchUp().then(() => {
+        if (!turnActive) finalizeStreaming();
+      });
+      refreshSessions().catch(() => {});
+    }
+  }
+
+  async function fetchStatus() {
+    if (!token || !activeId) return null;
+    const sid = activeId;
+    const seq = ++statusSeq;
+    const res = await api("/api/sessions/" + encodeURIComponent(sid) + "/status");
+    if (!res.ok) throw new Error("status " + res.status);
+    const st = await res.json();
+    // Ignore stale answers (session switched or a newer request finished).
+    if (sid !== activeId || seq !== statusSeq) return st;
+    applyStatus(st);
+    return st;
+  }
+
+  function reconcileStatus() {
+    return fetchStatus().catch(() => null);
+  }
+
+  /** ~3s poll only while a turn is running; backs off on failures. */
+  function scheduleStatusPoll() {
+    if (!turnActive) {
+      if (statusTimer) clearTimeout(statusTimer);
+      statusTimer = null;
+      statusDelay = 0;
+      return;
+    }
+    if (statusTimer) return;
+    const delay = statusDelay || STATUS_POLL_MS;
+    statusTimer = setTimeout(async () => {
+      statusTimer = null;
+      if (!turnActive) return;
+      if (typeof document !== "undefined" && document.hidden) {
+        // visibilitychange reconciles on return; keep a slow heartbeat.
+        statusDelay = STATUS_POLL_MAX_MS;
+        scheduleStatusPoll();
+        return;
+      }
+      try {
+        await fetchStatus();
+        statusDelay = STATUS_POLL_MS;
+      } catch (_) {
+        statusDelay = Math.min((statusDelay || STATUS_POLL_MS) * 2, STATUS_POLL_MAX_MS);
+      }
+      scheduleStatusPoll();
+    }, delay);
+  }
+
+  function queueApi(path, method, body) {
+    return api("/api/sessions/" + encodeURIComponent(activeId) + "/queue" + (path || ""), {
+      method: method,
+      body: body ? JSON.stringify(body) : (method === "GET" ? undefined : "{}"),
+    }).then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (data && data.status) applyStatus(data.status);
+      if (!res.ok) throw new Error(data.error || "queue request failed");
+      return data;
+    });
+  }
+
+  function renderQueue() {
+    const tray = els.queueTray;
+    if (!tray || !els.queueList) return;
+    const n = queueItems.length;
+    tray.hidden = n === 0;
+    if (els.queueSummary) {
+      els.queueSummary.textContent = n
+        ? (n === 1 ? "1 queued message" : n + " queued messages")
+        : "";
+    }
+    if (els.queuePausedNote) els.queuePausedNote.hidden = !(queuePaused && n);
+    if (els.btnSendQueued) {
+      // Offer a manual send whenever the queue would not drain on its own.
+      els.btnSendQueued.hidden = !(n && (queuePaused || !turnActive));
+      els.btnSendQueued.disabled = turnActive;
+    }
+    // Keep an in-progress edit (don't clobber what the user is typing).
+    const editing = editingQueueId && queueItems.some((q) => q.id === editingQueueId);
+    if (!editing) editingQueueId = "";
+    // The tray changes the feed height: keep a bottom-pinned feed pinned.
+    const stick = nearBottom();
+    const keepFocus = document.activeElement && els.queueList.contains(document.activeElement)
+      ? document.activeElement.dataset.focusKey || ""
+      : "";
+    els.queueList.innerHTML = "";
+    queueItems.forEach((q, i) => {
+      const li = document.createElement("li");
+      li.className = "queue-chip";
+      li.dataset.id = q.id;
+      if (q.id === editingQueueId) {
+        li.classList.add("editing");
+        const ta = document.createElement("textarea");
+        ta.className = "queue-edit";
+        ta.rows = 2;
+        ta.value = li.dataset.draft || q.content;
+        ta.setAttribute("aria-label", "Edit queued message " + (i + 1));
+        ta.dataset.focusKey = "edit-" + q.id;
+        ta.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            saveQueueEdit(q.id, ta.value);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            editingQueueId = "";
+            renderQueue();
+            focusQueueBtn(q.id, "edit");
+          }
+        });
+        const save = queueButton("Save", "Save queued message " + (i + 1), "save-" + q.id, "chip-btn chip-save");
+        save.addEventListener("click", () => saveQueueEdit(q.id, ta.value));
+        const cancel = queueButton("Cancel", "Cancel editing", "cancel-" + q.id, "chip-btn");
+        cancel.addEventListener("click", () => {
+          editingQueueId = "";
+          renderQueue();
+          focusQueueBtn(q.id, "edit");
+        });
+        const actions = document.createElement("div");
+        actions.className = "chip-actions";
+        actions.append(save, cancel);
+        li.append(ta, actions);
+        els.queueList.appendChild(li);
+        setTimeout(() => {
+          if (editingQueueId === q.id && document.activeElement !== ta) {
+            ta.focus();
+            ta.setSelectionRange(ta.value.length, ta.value.length);
+          }
+        }, 0);
+        return;
+      }
+      const num = document.createElement("span");
+      num.className = "chip-num";
+      num.setAttribute("aria-hidden", "true");
+      num.textContent = String(i + 1);
+      const text = document.createElement("span");
+      text.className = "chip-text";
+      text.textContent = q.content;
+      text.title = q.content;
+      const edit = queueButton("Edit", "Edit queued message " + (i + 1), "edit-" + q.id, "chip-btn");
+      edit.addEventListener("click", () => {
+        editingQueueId = q.id;
+        renderQueue();
+      });
+      const remove = queueButton("", "Remove queued message " + (i + 1), "remove-" + q.id, "chip-btn chip-remove");
+      remove.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+      remove.addEventListener("click", () => {
+        const next = queueItems[i + 1] || queueItems[i - 1];
+        queueApi("/" + encodeURIComponent(q.id), "DELETE")
+          .then(() => {
+            if (next) focusQueueBtn(next.id, "remove");
+            else if (els.input) els.input.focus();
+          })
+          .catch((err) => console.error(err));
+      });
+      const actions = document.createElement("div");
+      actions.className = "chip-actions";
+      actions.append(edit, remove);
+      li.append(num, text, actions);
+      els.queueList.appendChild(li);
+    });
+    if (keepFocus) {
+      const el = els.queueList.querySelector('[data-focus-key="' + CSS.escape(keepFocus) + '"]');
+      if (el) el.focus();
+    }
+    const editingEl = els.queueList.querySelector(".queue-chip.editing");
+    if (editingEl) editingEl.scrollIntoView({ block: "nearest" });
+    if (stick) pinFeedToBottom();
+    else updateJumpBottom();
+    syncPrimaryButton();
+  }
+
+  function queueButton(label, aria, key, cls) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = cls;
+    b.textContent = label;
+    b.setAttribute("aria-label", aria);
+    b.dataset.focusKey = key;
+    return b;
+  }
+
+  function focusQueueBtn(id, kind) {
+    setTimeout(() => {
+      const el = els.queueList && els.queueList.querySelector('[data-focus-key="' + CSS.escape(kind + "-" + id) + '"]');
+      if (el) el.focus();
+    }, 0);
+  }
+
+  function saveQueueEdit(id, value) {
+    const text = String(value || "").trim();
+    if (!text) return;
+    queueApi("/" + encodeURIComponent(id), "PUT", { content: text })
+      .then(() => {
+        editingQueueId = "";
+        renderQueue();
+        focusQueueBtn(id, "edit");
+      })
+      .catch((err) => {
+        console.error(err);
+        // Item was sent/removed meanwhile; drop the editor.
+        editingQueueId = "";
+        renderQueue();
+      });
   }
 
   function markCancelled(el) {
@@ -628,6 +873,7 @@
       refreshPollState();
       resubscribeSessions();
       catchUp();
+      reconcileStatus();
     };
     ws.onclose = () => {
       setWsPill(statusForDegraded());
@@ -646,6 +892,7 @@
     reconnectDelay = RECONNECT_BASE_MS;
     connectWs();
     catchUp();
+    reconcileStatus();
   }
 
   function subscribeSession(sessionId) {
@@ -680,7 +927,20 @@
   refreshSessions();
       return;
     }
+    if (t === "turn_status") {
+      if (data.session_id === activeId) applyStatus(data.status);
+      return;
+    }
+    if (t === "queued") {
+      // Hub queued our message instead of starting it: drop the optimistic bubble.
+      if (data.session_id === activeId) {
+        dropOptimisticUser(data.content || "");
+        if (data.status) applyStatus(data.status);
+      }
+      return;
+    }
     if (t === "session.snapshot") {
+      if (data.session_id === activeId && data.status) applyStatus(data.status);
       if (data.session_id === activeId && data.session) {
         if (els.feed.querySelector(".msg")) mergeTranscript(data.session);
         else renderTranscript(data.session);
@@ -732,6 +992,9 @@
       }
       const el = appendMsg("user", data.content);
       if (mid) el.dataset.id = mid;
+      // A queued message of ours just started: follow it like a fresh send
+      // (instant, so the stream that follows still counts as "near bottom").
+      pinFeedToBottom();
       return;
     }
     if (t === "assistant_start") {
@@ -750,9 +1013,12 @@
       return;
     }
     if (t === "tool_call" || t === "tool_result" || t === "tool_card") {
+      const follow = nearBottom();
       ensureStreaming();
       applyToolEvent(streamingTools, t, data.tool || {});
       renderTools(streamingEl, streamingTools);
+      if (follow) pinFeedToBottom();
+      else updateJumpBottom();
       return;
     }
     if (t === "assistant_done") {
@@ -789,10 +1055,13 @@
       }
       refreshSessions().catch(() => {});
       catchUp();
+      // A queued message may start right away; the hub has the final word.
+      reconcileStatus();
       return;
     }
     if (t === "error") {
-      setTurnActive(false);
+      if (data.session_id && data.session_id !== activeId) return;
+      reconcileStatus();
       const msg = data.error || "error";
       const el = appendMsg("assistant", msg);
       if (data.hint) {
@@ -875,18 +1144,13 @@
   function adoptLiveAssistant(content, messageId, tools) {
     const want = normalizeAssistantContent(content);
     if (!want) return false;
-    if (streamingEl && !streamingEl.dataset.id) {
-      streamingEl.classList.remove("streaming");
-      setMsgBody(streamingEl, content || "");
-      if (messageId) streamingEl.dataset.id = messageId;
-      if (tools && tools.length) renderTools(streamingEl, tools);
-      streamingEl = null;
-      streamingTools = null;
-      return true;
-    }
+    // 1) A finished bubble with the same text and no / synthetic id. Checked
+    //    before the live bubble: with queued turns running back-to-back, the
+    //    previous reply can reach disk while the next one is already streaming.
     const nodes = els.feed.querySelectorAll(".msg.assistant:not(.grok-thoughts-msg)");
     for (let i = nodes.length - 1; i >= 0; i--) {
       const el = nodes[i];
+      if (el === streamingEl) continue;
       const body = el.querySelector(".body");
       const raw = body && (body.dataset.raw != null ? body.dataset.raw : body.textContent);
       if (normalizeAssistantContent(raw || "") !== want) continue;
@@ -901,7 +1165,22 @@
         return true;
       }
       // Newest content match is a real server id — do not collapse.
-      return false;
+      break;
+    }
+    // 2) The live bubble, only if what it streamed so far is a prefix of the
+    //    disk text (never paint another turn's reply into it).
+    if (streamingEl && !streamingEl.dataset.id) {
+      const body = streamingEl.querySelector(".body");
+      const raw = normalizeAssistantContent(body && (body.dataset.raw != null ? body.dataset.raw : body.textContent));
+      if (!raw || want.indexOf(raw) === 0) {
+        streamingEl.classList.remove("streaming");
+        setMsgBody(streamingEl, content || "");
+        if (messageId) streamingEl.dataset.id = messageId;
+        if (tools && tools.length) renderTools(streamingEl, tools);
+        streamingEl = null;
+        streamingTools = null;
+        return true;
+      }
     }
     return false;
   }
@@ -1385,7 +1664,6 @@
     els.feed.innerHTML = "";
     streamingEl = null;
     streamingTools = null;
-    setTurnActive(false);
     const msgs = session.messages || [];
     if (!msgs.length) {
       els.feed.innerHTML = emptyStateHtml(
@@ -1926,7 +2204,12 @@
     setComposerReadOnly(false);
     setBuildSessionChrome(build);
     els.btnSend.disabled = false;
+    queueItems = [];
+    queuePaused = false;
+    editingQueueId = "";
     setTurnActive(false);
+    renderQueue();
+    reconcileStatus();
     try { history.replaceState(null, "", (DEMO ? "/?demo=1" : "/") + "#s=" + encodeURIComponent(id)); } catch (_) {}
   }
 
@@ -1968,8 +2251,40 @@
     if (banner) banner.hidden = true;
   }
 
+  /** Remove the newest unconfirmed You bubble with this text (it was queued). */
+  function dropOptimisticUser(content) {
+    const want = normalizeUserContent(content || "");
+    const nodes = els.feed.querySelectorAll(".msg.user:not([data-id])");
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const body = nodes[i].querySelector(".body");
+      const raw = body && (body.dataset.raw != null ? body.dataset.raw : body.textContent);
+      if (normalizeUserContent(raw || "") === want) {
+        nodes[i].remove();
+        return true;
+      }
+    }
+    return false;
+  }
+
   async function sendMessage(text) {
-    if (!text || !activeId || sending || turnActive) return;
+    if (!text || !activeId || sending) return;
+    // Busy (reply running or messages already waiting): queue on the hub.
+    if (turnActive || queueItems.length) {
+      sending = true;
+      syncPrimaryButton();
+      try {
+        await queueApi("", "POST", { content: text });
+        els.input.value = "";
+        autosize();
+      } catch (err) {
+        console.error(err);
+        setWsPill(statusForDegraded());
+      } finally {
+        sending = false;
+        syncPrimaryButton();
+      }
+      return;
+    }
     sending = true;
     selfSendAt[activeId] = Date.now();
     els.btnSend.disabled = true;
@@ -1978,6 +2293,7 @@
       if (wsIsOpen()) {
         // Optimistic You bubble (same as HTTP path). user_message / mergeTranscript
         // adoptOptimisticUser stamps data-id or retargets build-live → disk id.
+        // If the hub queues it instead (stale idle), a "queued" event drops it.
         appendMsg("user", text);
         ws.send(JSON.stringify({ type: "chat.send", session_id: activeId, content: text }));
         els.input.value = "";
@@ -1995,7 +2311,12 @@
         localEl.classList.add("failed");
         throw new Error(data.error || "send failed");
       }
-      if (data.message_id) localEl.dataset.id = data.message_id;
+      if (data.queued) {
+        localEl.remove();
+        if (data.status) applyStatus(data.status);
+      } else if (data.message_id) {
+        localEl.dataset.id = data.message_id;
+      }
       els.input.value = "";
       autosize();
       ensurePoll();
@@ -2003,30 +2324,42 @@
     } catch (err) {
       console.error(err);
       setWsPill(statusForDegraded());
-      setTurnActive(false);
+      reconcileStatus();
     } finally {
       sending = false;
       syncPrimaryButton();
     }
   }
 
+  async function sendQueuedNow() {
+    if (!token || !activeId) return;
+    try {
+      await queueApi("/send", "POST");
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
   async function cancelTurn() {
     if (!token || !activeId || !turnActive) return;
-    if (els.btnSend) els.btnSend.disabled = true;
+    if (els.btnStop) els.btnStop.disabled = true;
     try {
       const res = await api("/api/sessions/" + encodeURIComponent(activeId) + "/cancel", {
         method: "POST",
         body: "{}",
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        console.error("cancel failed", data);
-        syncPrimaryButton();
-      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) console.error("cancel failed", data);
+      else if (data.status) applyStatus(data.status);
     } catch (err) {
       console.error(err);
-      syncPrimaryButton();
     }
+    // Stop hides itself; don't strand keyboard focus on <body>.
+    if (document.activeElement === els.btnStop || document.activeElement === document.body) {
+      if (els.btnSend) els.btnSend.focus();
+    }
+    syncPrimaryButton();
+    reconcileStatus();
   }
 
   els.feed.addEventListener("scroll", onFeedScroll, { passive: true });
@@ -2038,10 +2371,6 @@
 
   els.composer.addEventListener("submit", (e) => {
     e.preventDefault();
-    if (turnActive) {
-      cancelTurn();
-      return;
-    }
     const text = els.input.value.trim();
     if (!text || !activeId) return;
     sendMessage(text);
@@ -2050,7 +2379,6 @@
   els.input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (turnActive) return;
       els.composer.requestSubmit();
     }
   });
@@ -2060,12 +2388,14 @@
     els.input.style.height = Math.min(els.input.scrollHeight, 160) + "px";
   }
 
-  if (els.btnSend) {
-    els.btnSend.addEventListener("click", (e) => {
-      if (!turnActive) return;
+  if (els.btnStop) {
+    els.btnStop.addEventListener("click", (e) => {
       e.preventDefault();
       cancelTurn();
     });
+  }
+  if (els.btnSendQueued) {
+    els.btnSendQueued.addEventListener("click", () => sendQueuedNow());
   }
   els.btnNew.onclick = () => newSession();
   els.btnMenu.onclick = () => {
@@ -2201,6 +2531,9 @@
     forceReconnectAndCatchUp();
   });
   window.addEventListener("offline", () => setWsPill("offline"));
+  window.addEventListener("focus", () => {
+    if (token && activeId) reconcileStatus();
+  });
   window.addEventListener("pageshow", (ev) => {
     if (ev.persisted || !wsIsOpen()) {
       reconnectDelay = RECONNECT_BASE_MS;
@@ -2324,7 +2657,8 @@
       await newSession();
     }
     els.btnSend.disabled = !activeId;
-    setTurnActive(false);
+    if (!activeId) setTurnActive(false);
+    else reconcileStatus();
     if (!activeId) {
       els.chatTitle.textContent = "Select a session";
       clearCtxMeter();
