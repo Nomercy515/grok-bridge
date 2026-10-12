@@ -506,6 +506,9 @@
     }
     const editingEl = els.queueList.querySelector(".queue-chip.editing");
     if (editingEl) editingEl.scrollIntoView({ block: "nearest" });
+    // Lift the jump-to-bottom button by the tray height so it keeps its usual
+    // spot relative to the dock instead of covering the queued chips.
+    document.documentElement.style.setProperty("--queue-h", n ? (tray.offsetHeight + 8) + "px" : "0px");
     if (stick) pinFeedToBottom();
     else updateJumpBottom();
     syncPrimaryButton();

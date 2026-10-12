@@ -1683,3 +1683,5 @@ body.vv-pinned .app {
 }
 /* Model chip shares the 44px control row with Stop / Send (tap target). */
 .composer .model-chip { height: 44px; padding: 0 14px; font-size: 13px; border-radius: var(--radius-sm); }
+/* Queue tray pushes the jump-to-bottom button up (var set by app.js). */
+.btn-jump-bottom { translate: 0 calc(-1 * var(--queue-h, 0px)); }
