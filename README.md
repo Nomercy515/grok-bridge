@@ -191,6 +191,7 @@ This project does not invent other mesh, tunnel, or LAN auto-discovery paths.
 | Skip Build check at start | off | `SKIP_GROK_BUILD_CHECK=1` |
 | Require `grok` at start | off (warn) on `./start.sh`, `.\start.ps1`, Linux `./scripts/install.sh` | `REQUIRE_GROK_BUILD=1` (hard-fail). Default on for `./scripts/install-macos.sh` and `.\scripts\install.ps1` only |
 | Grok binary override | PATH `grok` | `GROK_BRIDGE_GROK_BIN` |
+| Demo stream delay | `40` ms/word | `GROK_BRIDGE_DEMO_DELAY_MS` (slow the `demo` agent for UI / e2e testing) |
 
 Never commit real secrets, webhook URLs, or sender keys. See `docs/AGENT_BRIDGE.md` and `docs/grok-bridge.env.example`.
 
@@ -226,8 +227,12 @@ Never commit real secrets, webhook URLs, or sender keys. See `docs/AGENT_BRIDGE.
 | POST | `/api/auth/rotate-pairing` | bearer | new pairing code |
 | GET/POST | `/api/sessions` | bearer | list (bridge + Build with `source`; grok-only hidden unless `?include=grok-only`) / create (`session/new` → `build:…`; `{demo:true}` or `?demo=1` keeps hub-native) |
 | GET | `/api/sessions/{id}` | bearer | full transcript (`build:…` from disk; send resumes via ACP) |
-| POST | `/api/sessions/{id}/messages` | bearer | HTTP chat fallback |
-| POST | `/api/sessions/{id}/cancel` | bearer | Stop mid-turn |
+| POST | `/api/sessions/{id}/messages` | bearer | HTTP chat fallback; `202 {queued:true}` when a reply is running (see `docs/queue.md`) |
+| POST | `/api/sessions/{id}/cancel` | bearer | Stop mid-turn (queued messages stay, queue pauses) |
+| GET | `/api/sessions/{id}/status` | bearer | authoritative turn state: `{state: idle\|running, turn_id, started_at, updated_at, last_result, queue[], queue_paused}` |
+| GET/POST | `/api/sessions/{id}/queue` | bearer | list / add to the per-session FIFO queue |
+| PUT/DELETE | `/api/sessions/{id}/queue/{qid}` | bearer | edit / remove a queued message |
+| POST | `/api/sessions/{id}/queue/send` | bearer | "Send queued now": resume a paused queue |
 | POST | `/api/control/restart` | bearer | supervised restart |
 | POST | `/api/admin/reset` | bearer | stop + relaunch the auto-started `grok agent serve`, reconnect ACP, re-run self-check → `{ok, checks, agentPid, health}` (see `docs/ops.md`) |
 | WS | `/ws` | bearer | live events |
@@ -255,6 +260,13 @@ Full wire-up (webhook, tool cards, cancel): `docs/AGENT_BRIDGE.md`.
 ```bash
 go test ./...
 go build -o bin/grok-bridge ./cmd/grok-bridge
+```
+
+Headless UI check for live status + queueing (Playwright; see `scripts/e2e/README.md`):
+
+```bash
+cd scripts/e2e && npm install && npx playwright install chromium
+BASE=http://127.0.0.1:4020 TOKFILE=/path/to/token-file node live-status-queue.js
 ```
 
 ## Contributing

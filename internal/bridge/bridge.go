@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -578,7 +579,12 @@ func BuildAgentFromEnv(reg *JobRegistry, bridgeSecret string) (agent.Adapter, er
 	kind := strings.ToLower(strings.TrimSpace(envOr("GROK_BRIDGE_AGENT", "demo")))
 	switch kind {
 	case "", "demo":
-		return &agent.DemoAgent{}, nil
+		// GROK_BRIDGE_DEMO_DELAY_MS slows the demo stream (UI / e2e testing).
+		d := &agent.DemoAgent{}
+		if ms, err := strconv.Atoi(strings.TrimSpace(os.Getenv("GROK_BRIDGE_DEMO_DELAY_MS"))); err == nil && ms > 0 {
+			d.Delay = time.Duration(ms) * time.Millisecond
+		}
+		return d, nil
 	case "bot", "agent", "valentine":
 		secret := bridgeSecret
 		if secret == "" {

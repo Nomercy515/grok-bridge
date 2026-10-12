@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -53,6 +54,9 @@ type Hub struct {
 	clients map[*websocket.Conn]map[string]struct{}
 	mu      sync.Mutex
 	locks   map[string]*sync.Mutex
+	// onEvent (optional) sees every broadcast before fan-out; the server
+	// uses it to stamp turn last-update times.
+	onEvent func(sessionID string, event map[string]any)
 }
 
 func NewHub(store *sessions.Store, ag agent.Adapter, a *auth.Store) *Hub {
@@ -73,14 +77,17 @@ func (h *Hub) lockFor(sid string) *sync.Mutex {
 }
 
 func (h *Hub) Broadcast(event map[string]any, sessionID string, exclude *websocket.Conn) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	sid := sessionID
 	if sid == "" {
 		if v, ok := event["session_id"].(string); ok {
 			sid = v
 		}
 	}
+	if h.onEvent != nil && sid != "" {
+		h.onEvent(sid, event)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	raw, _ := json.Marshal(event)
 	var dead []*websocket.Conn
 	for ws, subs := range h.clients {
@@ -127,8 +134,10 @@ type Server struct {
 	Usage        *grokusage.Cache
 	ListenAddr   string // set by main before ListenAndServe for /api/endpoint identity
 	// ResetAgent and SelfCheck back POST /api/admin/reset (overridable in tests).
-	ResetAgent   func(ctx context.Context) grokacp.ResetResult
-	SelfCheck    func(ctx context.Context) []selfcheck.Check
+	ResetAgent func(ctx context.Context) grokacp.ResetResult
+	SelfCheck  func(ctx context.Context) []selfcheck.Check
+	// Turns is the source of truth for per-session turn state + queue.
+	Turns        *turnTracker
 	turnsMu      sync.Mutex
 	turns        map[string]context.CancelFunc // sessionID -> cancel active turn
 	buildRawMu   sync.Mutex
@@ -206,6 +215,13 @@ func NewServer(opts Options) (*Server, error) {
 		buildRaw:     make(map[string]string),
 		createdBuild: make(map[string]*sessions.Session),
 		createdCwd:   make(map[string]string),
+		Turns:        newTurnTracker(store.Root),
+	}
+	h.onEvent = func(sid string, event map[string]any) {
+		switch t, _ := event["type"].(string); {
+		case strings.HasPrefix(t, "assistant_"), strings.HasPrefix(t, "tool_"):
+			s.Turns.Touch(sid)
+		}
 	}
 	s.ResetAgent = func(ctx context.Context) grokacp.ResetResult { return s.ACP.Reset(ctx) }
 	s.SelfCheck = func(ctx context.Context) []selfcheck.Check {
@@ -668,6 +684,14 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, sess)
 		return
 	}
+	if parts[1] == "status" && r.Method == http.MethodGet {
+		s.handleSessionStatus(w, r, sid)
+		return
+	}
+	if parts[1] == "queue" {
+		s.handleSessionQueue(w, r, sid, parts[2:])
+		return
+	}
 	if parts[1] == "messages" && r.Method == http.MethodPost {
 		s.handlePostMessage(w, r, sid)
 		return
@@ -852,6 +876,7 @@ func (s *Server) handleCancelSession(w http.ResponseWriter, r *http.Request, sid
 			writeJSON(w, 404, map[string]any{"error": "not found"})
 			return
 		}
+		s.Turns.MarkCancel(sid)
 		hadTurn := s.cancelTurn(sid)
 		raw := s.takeBuildRaw(sid)
 		if raw == "" {
@@ -865,6 +890,7 @@ func (s *Server) handleCancelSession(w http.ResponseWriter, r *http.Request, sid
 		writeJSON(w, 200, map[string]any{
 			"ok": true, "session_id": sid,
 			"turn_cancelled": hadTurn, "jobs_cancelled": 0,
+			"status": s.Turns.Status(sid),
 		})
 		return
 	}
@@ -873,6 +899,7 @@ func (s *Server) handleCancelSession(w http.ResponseWriter, r *http.Request, sid
 		writeJSON(w, 404, map[string]any{"error": "not found"})
 		return
 	}
+	s.Turns.MarkCancel(sid)
 	hadTurn := s.cancelTurn(sid)
 	n := 0
 	if s.JobRegistry != nil {
@@ -881,6 +908,7 @@ func (s *Server) handleCancelSession(w http.ResponseWriter, r *http.Request, sid
 	writeJSON(w, 200, map[string]any{
 		"ok": true, "session_id": sid,
 		"turn_cancelled": hadTurn, "jobs_cancelled": n,
+		"status": s.Turns.Status(sid),
 	})
 }
 
@@ -893,39 +921,32 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request, sid s
 		return
 	}
 
-	run := s.runChat
-	if _, isBuild := buildsessions.StripPrefix(sid); isBuild {
-		if s.getBuildSession(sid) == nil {
-			writeJSON(w, 404, map[string]any{"error": "not found"})
-			return
-		}
-		run = s.runBuildChat
-	} else {
-		sess, _ := s.Hub.Store.Get(sid)
-		if sess == nil {
-			writeJSON(w, 404, map[string]any{"error": "not found"})
-			return
-		}
+	if !s.sessionExists(sid) {
+		writeJSON(w, 404, map[string]any{"error": "not found"})
+		return
 	}
 
 	idCh := make(chan string, 1)
 	errCh := make(chan error, 1)
-	go func() {
-		mid, err := run(context.Background(), sid, content, func(id string) {
-			select {
-			case idCh <- id:
-			default:
-			}
-		})
-		if err != nil {
-			errCh <- err
-			return
-		}
+	item, st, err := s.submitMessage(sid, content, func(id string) {
 		select {
-		case idCh <- mid:
+		case idCh <- id:
 		default:
 		}
-	}()
+	}, func(err error) {
+		select {
+		case errCh <- err:
+		default:
+		}
+	})
+	if err != nil {
+		writeQueueErr(w, err)
+		return
+	}
+	if item != nil {
+		writeJSON(w, 202, map[string]any{"ok": true, "queued": true, "queue_item": item, "status": st})
+		return
+	}
 	select {
 	case mid := <-idCh:
 		writeJSON(w, 200, map[string]any{"ok": true, "message_id": mid})
@@ -937,6 +958,95 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request, sid s
 		writeJSON(w, status, map[string]any{"error": err.Error(), "hint": agentHint(err)})
 	case <-time.After(10 * time.Second):
 		writeJSON(w, 500, map[string]any{"error": "send failed"})
+	}
+}
+
+// sessionExists reports whether sid is a known hub or Grok Build session.
+func (s *Server) sessionExists(sid string) bool {
+	if _, isBuild := buildsessions.StripPrefix(sid); isBuild {
+		return s.getBuildSession(sid) != nil
+	}
+	sess, _ := s.Hub.Store.Get(sid)
+	return sess != nil
+}
+
+func writeQueueErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errQueueNotFound):
+		writeJSON(w, 404, map[string]any{"error": err.Error()})
+	case errors.Is(err, errQueueFull):
+		writeJSON(w, 429, map[string]any{"error": err.Error()})
+	case errors.Is(err, errQueueTooLarge):
+		writeJSON(w, 413, map[string]any{"error": err.Error()})
+	default:
+		writeJSON(w, 400, map[string]any{"error": err.Error()})
+	}
+}
+
+// GET /api/sessions/{id}/status
+func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request, sid string) {
+	if !s.sessionExists(sid) {
+		writeJSON(w, 404, map[string]any{"error": "not found"})
+		return
+	}
+	writeJSON(w, 200, s.Turns.Status(sid))
+}
+
+// /api/sessions/{id}/queue[/...]
+//
+//	GET              -> status (queue included)
+//	POST {content}   -> enqueue, or start now when idle and queue is empty
+//	POST send        -> resume a paused queue / send the next item now if idle
+//	PUT|PATCH {qid} {content} -> edit a queued message
+//	DELETE {qid}     -> remove a queued message
+func (s *Server) handleSessionQueue(w http.ResponseWriter, r *http.Request, sid string, rest []string) {
+	if !s.sessionExists(sid) {
+		writeJSON(w, 404, map[string]any{"error": "not found"})
+		return
+	}
+	sub := ""
+	if len(rest) > 0 {
+		sub = rest[0]
+	}
+	switch {
+	case sub == "" && r.Method == http.MethodGet:
+		writeJSON(w, 200, s.Turns.Status(sid))
+	case sub == "" && r.Method == http.MethodPost:
+		body := readJSON(r)
+		content, _ := body["content"].(string)
+		item, st, err := s.submitMessage(sid, content, nil, nil)
+		if err != nil {
+			writeQueueErr(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "queued": item != nil, "queue_item": item, "status": st})
+	case sub == "send" && r.Method == http.MethodPost:
+		next, st := s.Turns.Resume(sid)
+		s.broadcastTurnStatus(st)
+		if next != nil {
+			go s.turnLoop(sid, next.Content, nil, nil)
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "sent": next, "status": st})
+	case sub != "" && (r.Method == http.MethodPut || r.Method == http.MethodPatch):
+		body := readJSON(r)
+		content, _ := body["content"].(string)
+		st, err := s.Turns.Edit(sid, sub, content)
+		if err != nil {
+			writeQueueErr(w, err)
+			return
+		}
+		s.broadcastTurnStatus(st)
+		writeJSON(w, 200, map[string]any{"ok": true, "status": st})
+	case sub != "" && r.Method == http.MethodDelete:
+		st, err := s.Turns.Remove(sid, sub)
+		if err != nil {
+			writeQueueErr(w, err)
+			return
+		}
+		s.broadcastTurnStatus(st)
+		writeJSON(w, 200, map[string]any{"ok": true, "status": st})
+	default:
+		http.Error(w, "method not allowed", 405)
 	}
 }
 
@@ -1058,6 +1168,7 @@ func (s *Server) runChat(parent context.Context, sessionID, content string, onUs
 				cancelled = true
 			}
 		}
+		noteTurnEvent(ctx, event)
 		s.Hub.Broadcast(event, sessionID, nil)
 	}
 	if !gotDone {
@@ -1066,6 +1177,7 @@ func (s *Server) runChat(parent context.Context, sessionID, content string, onUs
 			"type": "assistant_done", "session_id": sessionID,
 			"content": fullText, "cancelled": true, "error": "cancelled",
 		}
+		noteTurnEvent(ctx, doneEvt)
 		s.Hub.Broadcast(doneEvt, sessionID, nil)
 	}
 	extra := map[string]any{}
@@ -1203,13 +1315,16 @@ func (s *Server) runBuildChat(parent context.Context, sessionID, content string,
 				s.Usage.NoteLimitError(fmt.Errorf("%s", errStr))
 			}
 		}
+		noteTurnEvent(ctx, event)
 		s.Hub.Broadcast(event, sessionID, nil)
 	}
 	if !gotDone {
-		s.Hub.Broadcast(map[string]any{
+		doneEvt := map[string]any{
 			"type": "assistant_done", "session_id": sessionID,
 			"content": fullText, "cancelled": true, "error": "cancelled",
-		}, sessionID, nil)
+		}
+		noteTurnEvent(ctx, doneEvt)
+		s.Hub.Broadcast(doneEvt, sessionID, nil)
 	}
 
 	// Refresh transcript from disk if the agent persisted the turn.
@@ -1235,7 +1350,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	s.Hub.clients[conn] = map[string]struct{}{}
 	s.Hub.mu.Unlock()
 
-	_ = conn.WriteJSON(map[string]any{"type": "hello", "ok": true, "version": Version})
+	s.Hub.sendTo(conn, map[string]any{"type": "hello", "ok": true, "version": Version})
 
 	defer func() {
 		s.Hub.mu.Lock()
@@ -1251,7 +1366,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		var msg map[string]any
 		if json.Unmarshal(data, &msg) != nil {
-			_ = conn.WriteJSON(map[string]any{"type": "error", "error": "invalid json"})
+			s.Hub.sendTo(conn, map[string]any{"type": "error", "error": "invalid json"})
 			continue
 		}
 		s.handleWSMessage(conn, msg)
@@ -1262,11 +1377,11 @@ func (s *Server) handleWSMessage(conn *websocket.Conn, data map[string]any) {
 	mtype, _ := data["type"].(string)
 	switch mtype {
 	case "ping":
-		_ = conn.WriteJSON(map[string]any{"type": "pong"})
+		s.Hub.sendTo(conn, map[string]any{"type": "pong"})
 	case "session.subscribe":
 		sid, _ := data["session_id"].(string)
 		if sid == "" {
-			_ = conn.WriteJSON(map[string]any{"type": "error", "error": "session_id required"})
+			s.Hub.sendTo(conn, map[string]any{"type": "error", "error": "session_id required"})
 			return
 		}
 		var sess *sessions.Session
@@ -1279,7 +1394,7 @@ func (s *Server) handleWSMessage(conn *websocket.Conn, data map[string]any) {
 			}
 		}
 		if sess == nil {
-			_ = conn.WriteJSON(map[string]any{"type": "error", "error": "session not found"})
+			s.Hub.sendTo(conn, map[string]any{"type": "error", "error": "session not found"})
 			return
 		}
 		s.Hub.mu.Lock()
@@ -1288,27 +1403,23 @@ func (s *Server) handleWSMessage(conn *websocket.Conn, data map[string]any) {
 		}
 		s.Hub.clients[conn][sid] = struct{}{}
 		s.Hub.mu.Unlock()
-		_ = conn.WriteJSON(map[string]any{"type": "session.snapshot", "session_id": sid, "session": sess})
+		// Snapshot carries the authoritative turn status so a reconnecting
+		// client can clear a stale Stop / pick up the queue immediately.
+		s.Hub.sendTo(conn, map[string]any{
+			"type": "session.snapshot", "session_id": sid, "session": sess,
+			"status": s.Turns.Status(sid),
+		})
 	case "chat.send":
 		sid, _ := data["session_id"].(string)
 		content, _ := data["content"].(string)
 		content = strings.TrimSpace(content)
 		if sid == "" || content == "" {
-			_ = conn.WriteJSON(map[string]any{"type": "error", "error": "session_id and content required"})
+			s.Hub.sendTo(conn, map[string]any{"type": "error", "error": "session_id and content required"})
 			return
 		}
-		var isBuild bool
-		if _, isBuild = buildsessions.StripPrefix(sid); isBuild {
-			if s.getBuildSession(sid) == nil {
-				_ = conn.WriteJSON(map[string]any{"type": "error", "error": "session not found"})
-				return
-			}
-		} else {
-			sess, _ := s.Hub.Store.Get(sid)
-			if sess == nil {
-				_ = conn.WriteJSON(map[string]any{"type": "error", "error": "session not found"})
-				return
-			}
+		if !s.sessionExists(sid) {
+			s.Hub.sendTo(conn, map[string]any{"type": "error", "error": "session not found"})
+			return
 		}
 		s.Hub.mu.Lock()
 		if s.Hub.clients[conn] == nil {
@@ -1316,21 +1427,21 @@ func (s *Server) handleWSMessage(conn *websocket.Conn, data map[string]any) {
 		}
 		s.Hub.clients[conn][sid] = struct{}{}
 		s.Hub.mu.Unlock()
-		go func() {
-			if isBuild {
-				_, err := s.runBuildChat(context.Background(), sid, content, nil)
-				if err != nil {
-					s.Hub.Broadcast(map[string]any{
-						"type": "assistant_done", "session_id": sid,
-						"content": "", "error": err.Error(), "hint": agentHint(err),
-					}, sid, nil)
-				}
-				return
-			}
-			_, _ = s.runChat(context.Background(), sid, content, nil)
-		}()
+		item, st, err := s.submitMessage(sid, content, nil, nil)
+		if err != nil {
+			s.Hub.sendTo(conn, map[string]any{"type": "error", "session_id": sid, "error": err.Error()})
+			return
+		}
+		if item != nil {
+			// Tell the sender its text was queued (not started) so it can
+			// drop the optimistic bubble; everyone gets turn_status.
+			s.Hub.sendTo(conn, map[string]any{
+				"type": "queued", "session_id": sid, "queue_item": item,
+				"content": content, "status": st,
+			})
+		}
 	default:
-		_ = conn.WriteJSON(map[string]any{"type": "error", "error": "unknown type: " + mtype})
+		s.Hub.sendTo(conn, map[string]any{"type": "error", "error": "unknown type: " + mtype})
 	}
 }
 
@@ -1520,4 +1631,14 @@ func ResolveWebDir() string {
 		}
 	}
 	return "web"
+}
+
+// sendTo writes one JSON message to a single client. gorilla/websocket allows
+// only one concurrent writer per connection, and Broadcast writes under h.mu,
+// so direct replies must take the same lock.
+func (h *Hub) sendTo(conn *websocket.Conn, v any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.WriteJSON(v)
 }
