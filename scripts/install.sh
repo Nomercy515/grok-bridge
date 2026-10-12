@@ -256,7 +256,7 @@ if [[ -z "$SERVICE_USER" || "$SERVICE_USER" == "root" ]]; then
 fi
 SERVICE_GROUP="$(id -gn "$SERVICE_USER" 2>/dev/null || echo "$SERVICE_USER")"
 SERVICE_HOME="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
-SERVICE_HOME="${SERVICE_HOME:-/home/$SERVICE_USER}"
+[[ -n "$SERVICE_HOME" ]] || SERVICE_HOME="$(eval printf '%s' "~$SERVICE_USER")"
 GROK_HOME_DIR="${GROK_BRIDGE_GROK_HOME:-$SERVICE_HOME/.grok}"
 if ! grep -q '^GROK_BRIDGE_GROK_HOME=' "$ENV_FILE_PROJECT" 2>/dev/null; then
   echo "GROK_BRIDGE_GROK_HOME=${GROK_HOME_DIR}" >> "$ENV_FILE_PROJECT"
@@ -264,9 +264,6 @@ fi
 if ! grep -q '^GROK_BRIDGE_USER_NAME=' "$ENV_FILE_PROJECT" 2>/dev/null; then
   _gecos="$(getent passwd "$SERVICE_USER" | cut -d: -f5 | cut -d, -f1 | xargs 2>/dev/null || true)"
   _display="${_gecos:-$SERVICE_USER}"
-  if [[ "$SERVICE_USER" == "<user>" && -z "${_gecos:-}" ]]; then
-    _display="<name>"
-  fi
   echo "GROK_BRIDGE_USER_NAME=${_display}" >> "$ENV_FILE_PROJECT"
 fi
 if [[ -f "$ENV_FILE_SYSTEM" ]]; then

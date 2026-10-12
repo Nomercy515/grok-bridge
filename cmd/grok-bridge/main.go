@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"grok-bridge/internal/auth"
 	"grok-bridge/internal/bridge"
@@ -117,6 +119,17 @@ func main() {
 	}
 	log.Printf("Hub identity: host=%v listen=%s version=%s", ep["hostname"], addr, hub.Version)
 	logBuildStatus()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		for _, c := range srv.SelfCheck(ctx) {
+			state := "ok"
+			if !c.OK {
+				state = "FAIL"
+			}
+			log.Printf("selfcheck %s %s: %s", state, c.Name, c.Detail)
+		}
+	}()
 	log.Printf("Data dir: %s", store.Root)
 	log.Printf("Web dir: %s", webDir)
 	log.Printf("Restart: POST /api/control/restart (bearer) — prefer scripts/supervise.sh")

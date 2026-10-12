@@ -10,12 +10,12 @@ Two independent hubs were both using port **4020** on different machines in the 
 
 | Hub | Bind | Data dir | Grok home | Build chats |
 |-----|------|----------|-----------|-------------|
-| Cursor box (old live E2E) | `<tailscale-ip>:4020` | `data/phase2-live` | unset / no `~/.grok` | **None** |
+| Cursor box (old live E2E) | `<box-tailscale-ip>:4020` | `data/phase2-live` | unset / no `~/.grok` | **None** |
 | WSL Ubuntu (updated binary) | `127.0.0.1` then `0.0.0.0:4020` | local `data/` | default `~/.grok` | **31+ sessions** |
 
 Updating and testing the WSL tree fixed list+open **there**, but the bookmark / phone URL still pointed at the **box** Tailscale IP. That process was an older `/tmp/grok-bridge-4020` binary with no Build index and no readable Grok session store — so the UI looked “broken” while the WSL hub was fine.
 
-WSL Tailscale address that served Build chats after rebind: `http://<tailscale-ip>:4020/`.
+WSL Tailscale address that served Build chats after rebind: `http://<wsl-tailscale-ip>:4020/`.
 
 ## Root causes (product bugs)
 
