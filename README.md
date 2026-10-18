@@ -4,9 +4,9 @@
   <img src="brand/logo.png" alt="Grok Bridge — bridge arches as the bot’s eyes" width="160" height="160" />
 </p>
 
-**Grok Bridge** fills a gap Claude’s world already covers: keep a **Grok Build** session alive on your machine and keep working it from somewhere else — couch, commute, another desk — while you’re away from the keyboard that started it.
+**Grok Bridge** fills a gap Claude’s world already covers: keep a **Grok Build** session alive on your machine and keep working it from somewhere else: couch, commute, another desk, while you’re away from the keyboard that started it.
 
-Run a small hub on a desktop, VM, or always-on box. Pair from any browser on your [Tailscale](https://tailscale.com) network (phone or laptop). Same conversation, live streaming replies, optional Grok Bot agent on the backend with tools and memory. No public port-forward — MagicDNS only.
+Run a small hub on a desktop, VM, or always-on box. Pair from any browser on your [Tailscale](https://tailscale.com) network (phone or laptop). Same conversation, live streaming replies, optional Grok Bot agent on the backend with tools and memory. No public port-forward, MagicDNS only.
 
 ### Compared to Claude Code Remote Control
 
@@ -21,36 +21,36 @@ Run a small hub on a desktop, VM, or always-on box. Pair from any browser on you
 | Backend | Claude Code on the desk | Demo agent, or a **Grok Bot** woken over webhook with stream-back, tool cards, and Stop |
 | Feel | Official remote for Claude’s coding loop | Community-shaped remote for Grok’s loop — inspired by [Amnibro/grok-remote](https://github.com/Amnibro/grok-remote) (MIT), clean-room Go rewrite |
 
-If Remote Control is “leave the desk, keep Claude Code,” Grok Bridge is “leave the desk, keep **Grok Build**” — same idea, Grok-shaped, Tailscale-native, and yours to host.
+If Remote Control is “leave the desk, keep Claude Code,” Grok Bridge is “leave the desk, keep **Grok Build**” same idea, Grok-shaped, Tailscale-native, and yours to host.
 
 Default listen port: **4020**. Canonical phone URL:
 
 `https://<machine>.<tailnet>.ts.net:4020/`
 
-**Do not** expose `:4020` to the public internet — Tailscale only.
+**Do not** expose `:4020` to the public internet Tailscale only.
 
 ## What you get
 
-- **Desktop ↔ phone session bridge** — one server-authoritative transcript under `data/sessions/`; pick up the same conversation on another Tailscale device
-- **Grok Build sessions (live ACP)** — **New session** creates a real Build chat via ACP `session/new` (`build:…` ids); list/open on-disk chats from `$GROK_HOME/sessions`; **send/resume** via `grok agent serve`. Demo (`/?demo=1`) still creates hub-native sessions.
-- **Live WebSocket chat** — streaming assistant replies with fan-out to every connected client; `session.snapshot` resume after reconnect
-- **Pairing lock** — 6-digit code → hub bearer token; code rotates after each successful pair; token rotate without re-pairing
-- **Mobile-friendly UI** — dark greyscale cockpit, session rail, floating composer, live/sync/offline status (see `docs/UI_NOTES.md`)
-- **SuperGrok usage meter** — compact weekly fill-pill in the header; click the tip for weekly pool details and the short **5-hour** window when known (5h comes from rate-limit signals; billing does not always expose a 5h %)
-- **Web Notifications** — optional browser alerts for Grok replies while you are away from the chat tab
-- **Chat UX** — ATX `##` lines render as headers; Subagent badge + Parent jump on grok-only rows; older rail chats collapse; send/catch-up dedupe so You/assistant bubbles stay single
-- **HTTP fallback when WS drops** — `POST /api/sessions/{id}/messages`, background catch-up poll, reconnect backoff
-- **Tailscale-first networking** — hub bind prefers the machine Tailscale `100.x` (via `endpoint.env` / supervise) so phones reach the hub without a localhost-only bind; MagicDNS + `GET /api/endpoint` + sidebar show the bookmark URL
-- **TLS / WSS** — optional certs; install can mint self-signed SANs for localhost + MagicDNS + Tailscale IP
-- **Supervised install** — `scripts/supervise.sh` + systemd (`grok-bridge-endpoint` then `grok-bridge`) so the hub comes back after reboot
-- **Demo agent** — `/?demo=1` or `GROK_BRIDGE_AGENT=demo` for canned streams while you wire the rest
+- **Desktop ↔ phone session bridge**  one server-authoritative transcript under `data/sessions/`; pick up the same conversation on another Tailscale device
+- **Grok Build sessions (live ACP)**  **New session** creates a real Build chat via ACP `session/new` (`build:…` ids); list/open on-disk chats from `$GROK_HOME/sessions`; **send/resume** via `grok agent serve`. Demo (`/?demo=1`) still creates hub-native sessions.
+- **Live WebSocket chat**  streaming assistant replies with fan-out to every connected client; `session.snapshot` resume after reconnect
+- **Pairing lock**  6-digit code → hub bearer token; code rotates after each successful pair; token rotate without re-pairing
+- **Mobile-friendly UI**  dark greyscale cockpit, session rail, floating composer, live/sync/offline status (see `docs/UI_NOTES.md`)
+- **SuperGrok usage meter**  compact weekly fill-pill in the header; click the tip for weekly pool details and the short **5-hour** window when known (5h comes from rate-limit signals; billing does not always expose a 5h %)
+- **Web Notifications**  optional browser alerts for Grok replies while you are away from the chat tab
+- **Chat UX**  ATX `##` lines render as headers; Subagent badge + Parent jump on grok-only rows; older rail chats collapse; send/catch-up dedupe so You/assistant bubbles stay single
+- **HTTP fallback when WS drops**  `POST /api/sessions/{id}/messages`, background catch-up poll, reconnect backoff
+- **Tailscale-first networking**  hub bind prefers the machine Tailscale `100.x` (via `endpoint.env` / supervise) so phones reach the hub without a localhost-only bind; MagicDNS + `GET /api/endpoint` + sidebar show the bookmark URL
+- **TLS / WSS**  optional certs; install can mint self-signed SANs for localhost + MagicDNS + Tailscale IP
+- **Supervised install**  `scripts/supervise.sh` + systemd (`grok-bridge-endpoint` then `grok-bridge`) so the hub comes back after reboot
+- **Demo agent**  `/?demo=1` or `GROK_BRIDGE_AGENT=demo` for canned streams while you wire the rest
 - **Grok Bot agent bridge (Phases 1–4)** — pluggable backend:
   - **Mock** mode for local streaming without a real bot
   - **Webhook** mode to wake a Grok Bot routine, then stream deltas back into the hub
-  - **Tool cards** — live `tool_call` / `tool_result` (and `tool_card`) with running/done/error chips
-  - **Cancel / Stop** — stop a mid-turn reply from the UI or API; job status becomes `cancelled`
-- **Machine bridge API** — shared `GROK_BRIDGE_SECRET` for job create / events / complete / cancel (separate from human pairing)
-- **No secrets in the repo** — bridge secret and pairing material are generated at install into gitignored `data/`
+  - **Tool cards**  live `tool_call` / `tool_result` (and `tool_card`) with running/done/error chips
+  - **Cancel / Stop**  stop a mid-turn reply from the UI or API; job status becomes `cancelled`
+- **Machine bridge API**  shared `GROK_BRIDGE_SECRET` for job create / events / complete / cancel (separate from human pairing)
+- **No secrets in the repo**  bridge secret and pairing material are generated at install into gitignored `data/`
 
 ## Architecture
 
@@ -113,7 +113,7 @@ On Windows, if ExecutionPolicy blocks the script: `powershell -ExecutionPolicy B
 | `SKIP_TAILSCALE=1` | Skip Tailscale (Build-only host). Works on Linux install, macOS install, and `.\scripts\install.ps1` |
 | `GROK_BRIDGE_INSTALL_WAIT=1` | After the numbered steps, pause only on a TTY. Implemented in the ensure scripts above — not a global waiter |
 
-**Grok Build install remains vendor/manual** — this repo does not ship an unofficial `grok` installer. Linux `install.sh` stays warn-only so existing VM installs are not broken; pass `REQUIRE_GROK_BUILD=1` there to fail hard. Short matrix and Win/macOS smoke checklist: `docs/NATIVE_HOSTS.md`.
+**Grok Build install remains vendor/manual**  this repo does not ship an unofficial `grok` installer. Linux `install.sh` stays warn-only so existing VM installs are not broken; pass `REQUIRE_GROK_BUILD=1` there to fail hard. Short matrix and Win/macOS smoke checklist: `docs/NATIVE_HOSTS.md`.
 
 ## Install (Linux VM / host)
 
